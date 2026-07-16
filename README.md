@@ -56,3 +56,10 @@ diagnostics. Check the configured dependencies without performing writes:
 uv run hibiki config
 uv run hibiki health
 ```
+
+Register the five accepted Hibiki causal record types in Sekai. The command is
+idempotent and fails visibly if an existing definition has drifted:
+
+```sh
+uv run hibiki schema
+```

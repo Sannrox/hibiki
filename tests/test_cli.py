@@ -6,7 +6,7 @@ import subprocess
 
 from hibiki.boundaries import ProbeResult, ProcessResult
 from hibiki.cli import run
-from tests.fakes import FakeGrpcHealthProbe, FakeProcessRunner
+from tests.fakes import FakeGrpcHealthProbe, FakeProcessRunner, FakeSekaiGateway
 
 
 def environment() -> dict[str, str]:
@@ -23,6 +23,7 @@ def invoke(
     environ: dict[str, str] | None = None,
     process_runner: FakeProcessRunner | None = None,
     grpc_probe: FakeGrpcHealthProbe | None = None,
+    sekai_gateway: FakeSekaiGateway | None = None,
 ) -> tuple[int, dict[str, object], str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -33,6 +34,7 @@ def invoke(
         stderr=stderr,
         process_runner=process_runner or FakeProcessRunner(),
         grpc_probe=grpc_probe or FakeGrpcHealthProbe(),
+        sekai_gateway=sekai_gateway,
     )
     return exit_code, json.loads(stdout.getvalue()), stderr.getvalue()
 
@@ -128,3 +130,23 @@ def test_usage_errors_are_json_on_stdout() -> None:
     assert exit_code == 2
     assert payload["error"]["code"] == "usage"
     assert diagnostics.startswith("hibiki: unknown command")
+
+
+def test_schema_command_reports_created_and_unchanged_types() -> None:
+    gateway = FakeSekaiGateway()
+
+    first_code, first_payload, first_diagnostics = invoke(["schema"], sekai_gateway=gateway)
+    second_code, second_payload, second_diagnostics = invoke(["schema"], sekai_gateway=gateway)
+
+    assert first_code == second_code == 0
+    assert first_payload["ok"] is True
+    assert first_payload["created"] == [
+        "hibiki.source",
+        "hibiki.proposal",
+        "hibiki.publication",
+        "hibiki.outcome",
+        "hibiki.hypothesis",
+    ]
+    assert second_payload["created"] == []
+    assert second_payload["unchanged"] == first_payload["created"]
+    assert first_diagnostics == second_diagnostics == ""

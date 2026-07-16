@@ -6,6 +6,8 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import TextIO
 
+import grpc
+
 from hibiki.boundaries import (
     GrpcHealthProbe,
     NativeGrpcHealthProbe,
@@ -14,8 +16,10 @@ from hibiki.boundaries import (
 )
 from hibiki.config import ConfigurationError, Settings
 from hibiki.health import Check, run_health_checks, serialize_checks
+from hibiki.schema import SchemaConflictError, register_schema_types
+from hibiki.sekai import NativeSekaiGateway, SekaiGateway
 
-USAGE = "usage: hibiki <health|config> [--timeout SECONDS]"
+USAGE = "usage: hibiki <health|config|schema> [--timeout SECONDS]"
 
 
 def run(
@@ -26,6 +30,7 @@ def run(
     stderr: TextIO,
     process_runner: ProcessRunner,
     grpc_probe: GrpcHealthProbe,
+    sekai_gateway: SekaiGateway | None = None,
 ) -> int:
     if not argv or argv[0] in {"-h", "--help"}:
         _emit(stdout, {"ok": True, "usage": USAGE})
@@ -37,10 +42,10 @@ def run(
     except ValueError as error:
         return _usage_error(stdout, stderr, str(error))
 
-    if command not in {"health", "config"}:
+    if command not in {"health", "config", "schema"}:
         return _usage_error(stdout, stderr, f"unknown command: {command}")
-    if command == "config" and len(argv) != 1:
-        return _usage_error(stdout, stderr, "config does not accept arguments")
+    if command in {"config", "schema"} and len(argv) != 1:
+        return _usage_error(stdout, stderr, f"{command} does not accept arguments")
 
     try:
         settings = Settings.from_environ(environ)
@@ -62,6 +67,25 @@ def run(
 
     if command == "config":
         _emit(stdout, {"command": command, "ok": True, "configuration": settings.public_dict()})
+        return 0
+
+    if command == "schema":
+        gateway = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        try:
+            result = register_schema_types(gateway)
+        except (SchemaConflictError, grpc.RpcError) as error:
+            _emit_error(stdout, command, "schema_registration_failed", str(error))
+            print(f"hibiki: schema registration failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "created": result.created,
+                "unchanged": result.unchanged,
+            },
+        )
         return 0
 
     checks = run_health_checks(settings, process_runner, grpc_probe, timeout or 3.0)
