@@ -1,0 +1,7 @@
+{
+  "source": "sekai-chisei/proto",
+  "contracts": {
+    "chisei.proto": "fe8c6bc1777020e0150ebb9ed180312282678c270ca9b3a761b1f857b8cc1023",
+    "sekai.proto": "e93e06727e7381402e51c74c36a0ff3976e5edb2a3080e16e42bdfe8cfb95bd2"
+  }
+}
