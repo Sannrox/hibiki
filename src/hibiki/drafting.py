@@ -153,12 +153,14 @@ def _parse_draft(content: str, bundle: EvidenceBundle) -> tuple[str, str, tuple[
 
     commit = bundle.commits[0]
     revision = commit["revision"]
-    changed_paths = set(commit["changed_files"])
+    evidence_paths = {entry["path"] for key in ("patches", "documents") for entry in commit[key]}
     claims: list[DraftClaim] = []
     for raw_claim in raw_claims:
         if not isinstance(raw_claim, dict) or set(raw_claim) != {"text", "source_references"}:
             raise DraftingError("Chisei draft claim has unexpected or missing fields")
         text = _nonempty_string(raw_claim["text"], "claim text")
+        if text not in draft:
+            raise DraftingError("draft claim text must appear verbatim in the draft")
         raw_references = raw_claim["source_references"]
         if not isinstance(raw_references, list) or not raw_references:
             raise DraftingError("every draft claim must have a source reference")
@@ -168,7 +170,7 @@ def _parse_draft(content: str, bundle: EvidenceBundle) -> tuple[str, str, tuple[
                 raise DraftingError("draft source reference has unexpected or missing fields")
             reference_revision = _nonempty_string(raw_reference["revision"], "source revision")
             path = _nonempty_string(raw_reference["path"], "source path")
-            if reference_revision != revision or path not in changed_paths:
+            if reference_revision != revision or path not in evidence_paths:
                 raise DraftingError("draft source reference is outside the evidence bundle")
             references.append(SourceReference(reference_revision, path))
         claims.append(DraftClaim(text, tuple(references)))

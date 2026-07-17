@@ -11,13 +11,14 @@ from tests.test_discovery import fixture_runner
 
 
 def draft_response(*, path: str = "src/retry.py") -> str:
+    draft = "I made retries deterministic by giving each attempt a stable identity."
     return json.dumps(
         {
-            "draft": "I made retries deterministic by giving each attempt a stable identity.",
+            "draft": draft,
             "reasoning": "The implementation exposes a reusable retry invariant.",
             "claims": [
                 {
-                    "text": "Retries now use stable identity.",
+                    "text": draft,
                     "source_references": [{"revision": "abc123", "path": path}],
                 }
             ],
@@ -44,3 +45,10 @@ def test_governed_draft_rejects_reference_outside_selected_evidence() -> None:
 
     with pytest.raises(DraftingError, match="outside the evidence bundle"):
         generate_draft(FakeChiseiGateway(draft_response(path="private/notes.md")), bundle)
+
+
+def test_governed_draft_rejects_omitted_changed_file_as_evidence() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+
+    with pytest.raises(DraftingError, match="outside the evidence bundle"):
+        generate_draft(FakeChiseiGateway(draft_response(path="uv.lock")), bundle)

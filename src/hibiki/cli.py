@@ -25,6 +25,7 @@ from hibiki.records import RecordConflictError, RecordValidationError
 from hibiki.schema import SchemaConflictError, register_schema_types
 from hibiki.sekai import NativeSekaiGateway, SekaiGateway
 from hibiki.selection import SelectionError
+from hibiki.validation import ClaimValidationError
 
 USAGE = "usage: hibiki <health|config|schema|recommend|draft SOURCE_ID> [--timeout SECONDS]"
 
@@ -162,6 +163,7 @@ def run(
         except (
             DiscoveryError,
             DraftingError,
+            ClaimValidationError,
             ProposalWorkflowError,
             RecordConflictError,
             RecordValidationError,

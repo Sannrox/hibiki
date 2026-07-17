@@ -212,6 +212,7 @@ def test_draft_command_returns_proposal_claims_and_source_references() -> None:
     from hibiki.records import CausalRepositories, SourceRecord
     from hibiki.selection import commit_evidence_hash
     from tests.test_drafting import draft_response
+    from tests.test_validation import validation_response
 
     bundle = discover_public_revision(runner, "example/tenkai", "abc123")
     sekai = FakeSekaiGateway()
@@ -229,7 +230,7 @@ def test_draft_command_returns_proposal_claims_and_source_references() -> None:
         ["draft", source.external_id],
         process_runner=fixture_runner(),  # type: ignore[arg-type]
         sekai_gateway=sekai,
-        chisei_gateway=FakeChiseiGateway(draft_response()),
+        chisei_gateway=FakeChiseiGateway((draft_response(), validation_response())),
     )
 
     assert exit_code == 0

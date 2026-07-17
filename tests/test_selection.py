@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
 from hibiki.discovery import EvidenceBundle
-from hibiki.selection import SelectionError, select_candidate
+from hibiki.selection import SelectionError, commit_evidence_hash, select_candidate
 from tests.fakes import FakeChiseiGateway
 
 
@@ -99,3 +100,12 @@ def test_no_candidate_requires_explicit_null_candidate_field() -> None:
 
     with pytest.raises(SelectionError, match="missing candidate"):
         select_candidate(gateway, bundle(), ())
+
+
+def test_source_evidence_identity_ignores_mutable_check_state() -> None:
+    original = bundle()
+    changed_commit = dict(original.commits[0])
+    changed_commit["checks"] = [{"name": "test", "status": "completed", "conclusion": "failure"}]
+    changed = replace(original, commits=(changed_commit,))
+
+    assert commit_evidence_hash(original, "abc123") == commit_evidence_hash(changed, "abc123")

@@ -183,7 +183,10 @@ def commit_evidence_hash(bundle: EvidenceBundle, revision: str) -> str:
     commit = next((entry for entry in bundle.commits if entry["revision"] == revision), None)
     if commit is None:
         raise SelectionError("selected revision is absent from the evidence bundle")
-    encoded = json.dumps(commit, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    immutable_evidence = {key: value for key, value in commit.items() if key != "checks"}
+    encoded = json.dumps(
+        immutable_evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 

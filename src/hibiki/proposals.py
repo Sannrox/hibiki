@@ -14,6 +14,7 @@ from hibiki.drafting import DraftClaim, DraftResult, SourceReference, generate_d
 from hibiki.records import CausalRepositories, ProposalRecord, sha256_text
 from hibiki.sekai import SekaiGateway
 from hibiki.selection import commit_evidence_hash
+from hibiki.validation import ValidationResult, validate_claims
 
 PROPOSAL_DECISION_NAMESPACE = uuid.UUID("36937fca-08bd-4f67-a62d-56eecdb0d9f5")
 
@@ -59,6 +60,9 @@ def draft_source(
         raise ProposalWorkflowError("reloaded source evidence does not match the selected source")
 
     drafted = generate_draft(chisei, bundle, namespace=namespace)
+    validation = validate_claims(chisei, drafted.draft, bundle, namespace=namespace)
+    if not validation.valid:
+        raise ProposalWorkflowError("generated draft contains an unsupported factual claim")
     decision_id = str(
         uuid.uuid5(
             PROPOSAL_DECISION_NAMESPACE,
@@ -86,6 +90,18 @@ def draft_source(
             evidence=_draft_evidence(drafted, evidence_hash),
             target_id=proposal.external_id,
             outcome="drafted",
+        )
+    )
+    sekai.record_decision(
+        sekai_pb2.Decision(
+            id=_validation_decision_id(namespace, source.external_id, validation.request_id),
+            timestamp=now_ms,
+            actor="hibiki",
+            action="hibiki.claim_validation",
+            reason=validation.reasoning,
+            evidence=_validation_evidence(validation, proposal.draft_hash),
+            target_id=proposal.external_id,
+            outcome="supported",
         )
     )
     return DraftedProposal(
@@ -120,4 +136,38 @@ def _draft_evidence(drafted: DraftResult, evidence_hash: str) -> dict[str, str]:
         "receipt_json": drafted.receipt_json,
         "receipt_complete": str(drafted.receipt_complete).lower(),
         "missing_surfaces": json.dumps(list(drafted.missing_surfaces), separators=(",", ":")),
+    }
+
+
+def _validation_decision_id(namespace: str, target_id: str, request_id: str) -> str:
+    return str(
+        uuid.uuid5(
+            PROPOSAL_DECISION_NAMESPACE,
+            f"{namespace}:validation:{target_id}:{request_id}",
+        )
+    )
+
+
+def _validation_evidence(validation: ValidationResult, text_hash: str) -> dict[str, str]:
+    claims = [
+        {
+            "text": claim.text,
+            "supported": claim.supported,
+            "reason": claim.reason,
+            "source_references": [
+                {"revision": reference.revision, "path": reference.path}
+                for reference in claim.source_references
+            ],
+        }
+        for claim in validation.claims
+    ]
+    return {
+        "final_text_hash": text_hash,
+        "claims": json.dumps(claims, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        "operation_id": validation.operation_id,
+        "provider": validation.provider,
+        "model": validation.model,
+        "receipt_json": validation.receipt_json,
+        "receipt_complete": str(validation.receipt_complete).lower(),
+        "missing_surfaces": json.dumps(list(validation.missing_surfaces), separators=(",", ":")),
     }
