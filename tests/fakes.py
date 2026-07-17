@@ -137,14 +137,16 @@ class FakeSekaiGateway:
         return stored
 
     def list_decisions(
-        self, *, actor: str, action: str, limit: int
+        self, *, actor: str, action: str, limit: int, after: int = 0
     ) -> tuple[sekai_pb2.Decision, ...]:
         matches = [
             decision
             for decision in self.decisions.values()
-            if (not actor or decision.actor == actor) and (not action or decision.action == action)
+            if (not actor or decision.actor == actor)
+            and (not action or decision.action == action)
+            and decision.timestamp > after
         ]
-        return tuple(sorted(matches, key=lambda decision: decision.timestamp, reverse=True)[:limit])
+        return tuple(sorted(matches, key=lambda decision: decision.timestamp)[:limit])
 
     def register_evidence_producer(self, capability: sekai_pb2.EvidenceProducerCapability) -> None:
         stored = sekai_pb2.EvidenceProducerCapability()

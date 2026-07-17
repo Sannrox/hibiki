@@ -24,7 +24,7 @@ class SekaiGateway(Protocol):
     def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision: ...
 
     def list_decisions(
-        self, *, actor: str, action: str, limit: int
+        self, *, actor: str, action: str, limit: int, after: int = 0
     ) -> tuple[sekai_pb2.Decision, ...]: ...
 
     def register_evidence_producer(
@@ -119,11 +119,13 @@ class NativeSekaiGateway:
         return response.decision
 
     def list_decisions(
-        self, *, actor: str, action: str, limit: int
+        self, *, actor: str, action: str, limit: int, after: int = 0
     ) -> tuple[sekai_pb2.Decision, ...]:
         with grpc.insecure_channel(self.target) as channel:
             response = sekai_pb2_grpc.SekaiServiceStub(channel).ListDecisions(
-                sekai_pb2.ListDecisionsRequest(actor=actor, action=action, limit=limit),
+                sekai_pb2.ListDecisionsRequest(
+                    actor=actor, action=action, limit=limit, after=after
+                ),
                 timeout=self.timeout,
                 metadata=self._metadata,
             )

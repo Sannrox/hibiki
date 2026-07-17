@@ -116,6 +116,28 @@ def test_first_classifications_require_confirmation_and_are_idempotent() -> None
     assert len(chisei.executed_plans) == 1
 
 
+def test_classification_batches_valid_large_reply_sets() -> None:
+    sekai, publication = setup_publication(21)
+    second_batch = json.dumps(
+        {
+            "classifications": [
+                {
+                    "submission_id": "reply-submission-20",
+                    "reply_id": "reply-20",
+                    "category": "potential_user",
+                    "confidence_bps": 9500,
+                }
+            ]
+        }
+    )
+    chisei = FakeChiseiGateway((classification_payload(20), second_batch))
+
+    result = classify_replies(sekai, chisei, publication.external_id, "hibiki")
+
+    assert len(result.classifications) == 21
+    assert len(chisei.executed_plans) == 2
+
+
 def test_confirmation_persists_correction_as_evaluation_evidence() -> None:
     sekai, publication = setup_publication()
     classify_replies(
@@ -181,6 +203,29 @@ def test_low_accuracy_does_not_enable_automatic_classification() -> None:
 
     assert result.calibrated is False
     assert result.classifications[0].disposition == "confirmation_required"
+
+
+def test_calibration_paginates_complete_decision_history() -> None:
+    sekai, publication = setup_publication()
+    for index in range(501):
+        sekai.record_decision(
+            sekai_pb2.Decision(
+                id=f"confirmation-{index}",
+                timestamp=index + 1,
+                actor="operator",
+                action="hibiki.reply_classification_confirmation",
+                target_id=f"prior-{index}",
+                outcome="correct",
+                evidence={"confirmed_category": "potential_user"},
+            )
+        )
+
+    result = classify_replies(
+        sekai, FakeChiseiGateway(classification_payload(1)), publication.external_id, "hibiki"
+    )
+
+    assert result.confirmed_count == 501
+    assert result.calibrated is True
 
 
 def test_final_report_counts_confirmed_qualified_replies_and_exposes_lineage() -> None:
