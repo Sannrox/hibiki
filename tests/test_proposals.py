@@ -358,3 +358,35 @@ def test_failed_redraft_preserves_existing_approval() -> None:
         )
 
     assert repositories.proposals.get(drafted.proposal.stable_id) == approved.proposal
+
+
+def test_failed_validation_decision_write_leaves_no_approvable_proposal() -> None:
+    class FailingDecisionSekai(FakeSekaiGateway):
+        def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision:
+            if decision.action == "hibiki.claim_validation":
+                raise RuntimeError("decision write failed")
+            return super().record_decision(decision)
+
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FailingDecisionSekai()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="decision write failed"):
+        draft_source(
+            fixture_runner(),
+            sekai,
+            FakeChiseiGateway((draft_response(), validation_response())),
+            source.external_id,
+            "hibiki",
+        )
+
+    assert repositories.proposals.get(source.stable_id) is None

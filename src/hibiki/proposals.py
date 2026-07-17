@@ -100,17 +100,19 @@ def draft_source(
             f"{namespace}:draft:{source.external_id}:{drafted.request_id}",
         )
     )
-    proposal = repositories.proposals.put(
-        ProposalRecord(
-            namespace=namespace,
-            stable_id=source.stable_id,
-            source_external_id=source.external_id,
-            evidence_hash=evidence_hash,
-            draft=drafted.draft,
-            decision_ref=decision_id,
-            operation_id=drafted.operation_id,
-        )
+    proposal = ProposalRecord(
+        namespace=namespace,
+        stable_id=source.stable_id,
+        source_external_id=source.external_id,
+        evidence_hash=evidence_hash,
+        draft=drafted.draft,
+        decision_ref="pending-validation",
+        operation_id=validation.operation_id,
     )
+    validation_decision_id = _validation_decision_id(
+        namespace, proposal.external_id, validation.request_id
+    )
+    proposal = replace(proposal, decision_ref=validation_decision_id)
     sekai.record_decision(
         sekai_pb2.Decision(
             id=decision_id,
@@ -122,9 +124,6 @@ def draft_source(
             target_id=proposal.external_id,
             outcome="drafted",
         )
-    )
-    validation_decision_id = _validation_decision_id(
-        namespace, proposal.external_id, validation.request_id
     )
     sekai.record_decision(
         sekai_pb2.Decision(
@@ -138,13 +137,7 @@ def draft_source(
             outcome="supported",
         )
     )
-    proposal = repositories.proposals.put(
-        replace(
-            proposal,
-            decision_ref=validation_decision_id,
-            operation_id=validation.operation_id,
-        )
-    )
+    proposal = repositories.proposals.put(proposal)
     return DraftedProposal(
         proposal=proposal,
         reasoning=drafted.reasoning,
