@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import tempfile
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
 from hibiki.boundaries import ProcessRunner
@@ -55,6 +59,29 @@ class ProposalApproval:
 
 
 def draft_source(
+    process_runner: ProcessRunner,
+    sekai: SekaiGateway,
+    chisei: ChiseiGateway,
+    source_external_id: str,
+    namespace: str,
+    *,
+    limits: DiscoveryLimits | None = None,
+    clock_ms: Callable[[], int] | None = None,
+) -> DraftedProposal:
+    proposal_external_id = _proposal_external_id_for_source(source_external_id, namespace)
+    with _proposal_lock(proposal_external_id):
+        return _draft_source_locked(
+            process_runner,
+            sekai,
+            chisei,
+            source_external_id,
+            namespace,
+            limits=limits,
+            clock_ms=clock_ms,
+        )
+
+
+def _draft_source_locked(
     process_runner: ProcessRunner,
     sekai: SekaiGateway,
     chisei: ChiseiGateway,
@@ -160,6 +187,30 @@ def validate_proposal_edit(
     limits: DiscoveryLimits | None = None,
     clock_ms: Callable[[], int] | None = None,
 ) -> EditedProposalValidation:
+    with _proposal_lock(proposal_external_id):
+        return _validate_proposal_edit_locked(
+            process_runner,
+            sekai,
+            chisei,
+            proposal_external_id,
+            final_text,
+            namespace,
+            limits=limits,
+            clock_ms=clock_ms,
+        )
+
+
+def _validate_proposal_edit_locked(
+    process_runner: ProcessRunner,
+    sekai: SekaiGateway,
+    chisei: ChiseiGateway,
+    proposal_external_id: str,
+    final_text: str,
+    namespace: str,
+    *,
+    limits: DiscoveryLimits | None = None,
+    clock_ms: Callable[[], int] | None = None,
+) -> EditedProposalValidation:
     now_ms = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
     repositories = CausalRepositories.create(sekai, namespace, clock_ms=lambda: now_ms)
     proposal = repositories.proposals.get_external(proposal_external_id)
@@ -228,6 +279,24 @@ def validate_proposal_edit(
 
 
 def approve_proposal(
+    sekai: SekaiGateway,
+    proposal_external_id: str,
+    final_text_hash: str,
+    namespace: str,
+    *,
+    clock_ms: Callable[[], int] | None = None,
+) -> ProposalApproval:
+    with _proposal_lock(proposal_external_id):
+        return _approve_proposal_locked(
+            sekai,
+            proposal_external_id,
+            final_text_hash,
+            namespace,
+            clock_ms=clock_ms,
+        )
+
+
+def _approve_proposal_locked(
     sekai: SekaiGateway,
     proposal_external_id: str,
     final_text_hash: str,
@@ -346,6 +415,26 @@ def _approval_id(namespace: str, proposal_external_id: str, final_text_hash: str
             f"{namespace}:approval:{proposal_external_id}:{final_text_hash}",
         )
     )
+
+
+def _proposal_external_id_for_source(source_external_id: str, namespace: str) -> str:
+    prefix = f"hibiki.source:{namespace}:"
+    if not source_external_id.startswith(prefix) or source_external_id == prefix:
+        raise ProposalWorkflowError(f"source external ID must identify {namespace}/hibiki.source")
+    return f"hibiki.proposal:{namespace}:{source_external_id.removeprefix(prefix)}"
+
+
+@contextmanager
+def _proposal_lock(proposal_external_id: str) -> Iterator[None]:
+    lock_name = f"hibiki-proposal-{sha256_text(proposal_external_id)}.lock"
+    lock_path = os.path.join(tempfile.gettempdir(), lock_name)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def _validation_evidence(validation: ValidationResult, text_hash: str) -> dict[str, str]:
