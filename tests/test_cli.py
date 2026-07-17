@@ -204,3 +204,38 @@ def test_recommend_command_returns_grounded_candidate_and_receipt_status() -> No
     assert payload["candidate"]["public_url"].endswith("/commit/abc123")
     assert payload["operation_receipt"] == {"complete": True, "missing_surfaces": []}
     assert diagnostics == ""
+
+
+def test_draft_command_returns_proposal_claims_and_source_references() -> None:
+    runner = fixture_runner()
+    from hibiki.discovery import discover_public_revision
+    from hibiki.records import CausalRepositories, SourceRecord
+    from hibiki.selection import commit_evidence_hash
+    from tests.test_drafting import draft_response
+
+    bundle = discover_public_revision(runner, "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    source = CausalRepositories.create(sekai, "hibiki").sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+
+    exit_code, payload, diagnostics = invoke(
+        ["draft", source.external_id],
+        process_runner=fixture_runner(),  # type: ignore[arg-type]
+        sekai_gateway=sekai,
+        chisei_gateway=FakeChiseiGateway(draft_response()),
+    )
+
+    assert exit_code == 0
+    assert payload["proposal_external_id"].startswith("hibiki.proposal:hibiki:")
+    assert payload["claims"][0]["source_references"] == [
+        {"revision": "abc123", "path": "src/retry.py"}
+    ]
+    assert payload["source_references"] == payload["claims"][0]["source_references"]
+    assert diagnostics == ""

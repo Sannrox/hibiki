@@ -30,7 +30,7 @@ class FakeGrpcHealthProbe:
 
 @dataclass
 class FakeChiseiGateway:
-    content: str
+    content: str | tuple[str, ...]
     plan_id: str = "operation-1"
     provider: str = "local"
     model: str = "fixture-model"
@@ -55,9 +55,14 @@ class FakeChiseiGateway:
 
     def execute_plan(self, plan: chisei_pb2.ExecutionPlan) -> chisei_pb2.ExecutePlanResponse:
         self.executed_plans.append(plan.plan_id)
+        content = (
+            self.content[len(self.executed_plans) - 1]
+            if isinstance(self.content, tuple)
+            else self.content
+        )
         return chisei_pb2.ExecutePlanResponse(
             response=chisei_pb2.PlannedChatResponse(
-                content=self.content,
+                content=content,
                 provider=self.provider,
             ),
             executed_at=1_750_000_000_000,

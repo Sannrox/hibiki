@@ -393,6 +393,17 @@ class RecordRepository[RecordT: CausalRecord]:
             return None
         return self._decode(stored)
 
+    def get_external(self, external_id: str) -> RecordT | None:
+        prefix = f"{self._record_type.KIND}:{self._namespace}:"
+        if not external_id.startswith(prefix) or external_id == prefix:
+            raise RecordValidationError(
+                f"external ID must identify {self._namespace}/{self._record_type.KIND}"
+            )
+        stored = self._gateway.find_by_external_id(external_id)
+        if stored is None:
+            return None
+        return self._decode(stored)
+
     def put(self, record: RecordT) -> RecordT:
         if not isinstance(record, self._record_type):
             raise TypeError(f"repository accepts only {self._record_type.__name__}")

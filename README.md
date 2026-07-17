@@ -72,3 +72,11 @@ records the selection decision and Chisei operation receipt in Sekai:
 ```sh
 uv run hibiki recommend
 ```
+
+Generate one standalone draft from a selected source. Hibiki reloads the exact
+public revision, verifies its evidence hash, and returns the draft, reasoning,
+claims, and source references while persisting the proposal in Sekai:
+
+```sh
+uv run hibiki draft 'hibiki.source:hibiki:OWNER/REPOSITORY@REVISION'
+```

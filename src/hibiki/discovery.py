@@ -168,6 +168,74 @@ def discover_public_sources(
     )
 
 
+def discover_public_revision(
+    runner: ProcessRunner,
+    repository: str,
+    revision: str,
+    *,
+    limits: DiscoveryLimits | None = None,
+    scanned_at: datetime | None = None,
+) -> EvidenceBundle:
+    """Reload one immutable public revision for drafting or claim validation."""
+    limits = limits or DiscoveryLimits()
+    _validate_limits(limits)
+    scan_time = (scanned_at or datetime.now(UTC)).astimezone(UTC)
+    scanned_at_text = scan_time.isoformat().replace("+00:00", "Z")
+
+    metadata = _gh_json(runner, ("gh", "api", f"repos/{repository}"), limits.timeout)
+    if not isinstance(metadata, dict):
+        raise DiscoveryError("GitHub repository metadata must be a JSON object")
+    if metadata.get("private") is not False or metadata.get("visibility") != "public":
+        raise DiscoveryError(f"repository {repository!r} is not confirmed public")
+    default_branch = _required_string(metadata, "default_branch", "repository metadata")
+
+    omissions: list[dict[str, str]] = []
+    detail = _gh_json(
+        runner,
+        (
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            f"repos/{repository}/commits/{revision}",
+            "-f",
+            f"per_page={limits.max_files_per_commit}",
+            "-f",
+            "page=1",
+        ),
+        limits.timeout,
+    )
+    checks = _gh_json(
+        runner,
+        ("gh", "api", f"repos/{repository}/commits/{revision}/check-runs"),
+        limits.timeout,
+    )
+    commit = _build_commit(repository, revision, detail, checks, runner, limits, omissions)
+    payload = {
+        "repository": repository,
+        "default_branch": default_branch,
+        "scanned_at": scanned_at_text,
+        "since": None,
+        "commits": [commit],
+        "omissions": omissions,
+    }
+    _sensitive_preflight(payload)
+    encoded = _canonical_json(payload).encode()
+    if len(encoded) > limits.max_bundle_bytes:
+        raise DiscoveryError(
+            f"bounded evidence is {len(encoded)} bytes; limit is {limits.max_bundle_bytes} bytes"
+        )
+    return EvidenceBundle(
+        repository=repository,
+        default_branch=default_branch,
+        scanned_at=scanned_at_text,
+        since=None,
+        commits=(commit,),
+        omissions=tuple(omissions),
+        content_hash=hashlib.sha256(encoded).hexdigest(),
+    )
+
+
 def _build_commit(
     repository: str,
     revision: str,

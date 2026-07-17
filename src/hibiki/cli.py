@@ -17,14 +17,16 @@ from hibiki.boundaries import (
 from hibiki.chisei import ChiseiGateway, NativeChiseiGateway
 from hibiki.config import ConfigurationError, Settings
 from hibiki.discovery import DiscoveryError
+from hibiki.drafting import DraftingError
 from hibiki.health import Check, run_health_checks, serialize_checks
+from hibiki.proposals import ProposalWorkflowError, draft_source
 from hibiki.recommendation import recommend_source
 from hibiki.records import RecordConflictError, RecordValidationError
 from hibiki.schema import SchemaConflictError, register_schema_types
 from hibiki.sekai import NativeSekaiGateway, SekaiGateway
 from hibiki.selection import SelectionError
 
-USAGE = "usage: hibiki <health|config|schema|recommend> [--timeout SECONDS]"
+USAGE = "usage: hibiki <health|config|schema|recommend|draft SOURCE_ID> [--timeout SECONDS]"
 
 
 def run(
@@ -48,10 +50,12 @@ def run(
     except ValueError as error:
         return _usage_error(stdout, stderr, str(error))
 
-    if command not in {"health", "config", "schema", "recommend"}:
+    if command not in {"health", "config", "schema", "recommend", "draft"}:
         return _usage_error(stdout, stderr, f"unknown command: {command}")
     if command in {"config", "schema", "recommend"} and len(argv) != 1:
         return _usage_error(stdout, stderr, f"{command} does not accept arguments")
+    if command == "draft" and len(argv) != 2:
+        return _usage_error(stdout, stderr, "draft requires SOURCE_ID")
 
     try:
         settings = Settings.from_environ(environ)
@@ -140,6 +144,60 @@ def run(
                     "missing_surfaces": result.missing_surfaces,
                 },
                 "scanned_at": result.scanned_at,
+            },
+        )
+        return 0
+
+    if command == "draft":
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        chisei = chisei_gateway or NativeChiseiGateway(settings.chisei_target)
+        try:
+            result = draft_source(
+                process_runner,
+                sekai,
+                chisei,
+                argv[1],
+                settings.namespace,
+            )
+        except (
+            DiscoveryError,
+            DraftingError,
+            ProposalWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "draft_failed", str(error))
+            print(f"hibiki: draft failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "proposal_external_id": result.proposal.external_id,
+                "draft": result.proposal.draft,
+                "draft_hash": result.proposal.draft_hash,
+                "reasoning": result.reasoning,
+                "claims": [
+                    {
+                        "text": claim.text,
+                        "source_references": [
+                            {"revision": reference.revision, "path": reference.path}
+                            for reference in claim.source_references
+                        ],
+                    }
+                    for claim in result.claims
+                ],
+                "source_references": [
+                    {"revision": reference.revision, "path": reference.path}
+                    for reference in result.source_references
+                ],
+                "operation_id": result.operation_id,
+                "operation_receipt": {
+                    "complete": result.receipt_complete,
+                    "missing_surfaces": result.missing_surfaces,
+                },
             },
         )
         return 0

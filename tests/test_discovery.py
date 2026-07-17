@@ -12,6 +12,7 @@ from hibiki.discovery import (
     DiscoveryError,
     DiscoveryLimits,
     SensitiveDataError,
+    discover_public_revision,
     discover_public_sources,
 )
 
@@ -135,6 +136,21 @@ def test_discovers_only_public_bounded_evidence_with_checks_and_documents() -> N
         "generated",
         "binary_or_unavailable",
     }
+
+
+def test_reloads_one_selected_public_revision_without_commit_listing() -> None:
+    runner = fixture_runner()
+
+    bundle = discover_public_revision(
+        runner,
+        "example/tenkai",
+        "abc123",
+        scanned_at=datetime(2026, 7, 17, 10, tzinfo=UTC),
+    )
+
+    assert bundle.since is None
+    assert [commit["revision"] for commit in bundle.commits] == ["abc123"]
+    assert not any(call[0][-1] == "repos/example/tenkai/commits" for call in runner.calls)
 
 
 def test_rejects_repository_that_is_not_confirmed_public() -> None:
