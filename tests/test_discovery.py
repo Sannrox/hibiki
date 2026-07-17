@@ -163,3 +163,12 @@ def test_visible_bundle_ceiling_fails_instead_of_sending_oversized_context() -> 
             since="2026-07-16T09:00:00Z",
             limits=DiscoveryLimits(max_bundle_bytes=100),
         )
+
+
+def test_file_limit_cannot_exceed_github_page_size() -> None:
+    with pytest.raises(ValueError, match="100-file page limit"):
+        discover_public_sources(
+            fixture_runner(),
+            "example/tenkai",
+            limits=DiscoveryLimits(max_files_per_commit=101),
+        )

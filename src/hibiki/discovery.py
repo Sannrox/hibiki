@@ -372,3 +372,5 @@ def _validate_limits(limits: DiscoveryLimits) -> None:
         or limits.timeout <= 0
     ):
         raise ValueError("discovery limits must be positive")
+    if limits.max_files_per_commit > 100:
+        raise ValueError("max_files_per_commit must not exceed GitHub's 100-file page limit")
