@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
@@ -25,10 +25,11 @@ from hibiki.selection import commit_evidence_hash
 from tests.fakes import FakeChiseiGateway, FakeSekaiGateway
 from tests.test_discovery import fixture_runner
 from tests.test_drafting import draft_response
-from tests.test_validation import validation_response
+from tests.test_validation import inventory_response, validation_response
 
 ATTEMPTED_AT = 1_750_000_000_000
-SINCE = "2025-06-15T15:01:40Z"
+SINCE_ID = "1934265052165046271"
+UNTIL_ID = "1934267568751640576"
 
 
 @dataclass
@@ -67,6 +68,29 @@ def _approved_proposal(sekai: FakeSekaiGateway) -> ProposalRecord:
     ).proposal
 
 
+def _approved_edited_proposal(
+    sekai: FakeSekaiGateway,
+    proposal: ProposalRecord,
+    final_text: str,
+) -> ProposalRecord:
+    validated = validate_proposal_edit(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway(
+            (inventory_response(final_text), validation_response(claim=final_text))
+        ),
+        proposal.external_id,
+        final_text,
+        "hibiki",
+    ).proposal
+    return approve_proposal(
+        sekai,
+        validated.external_id,
+        validated.draft_hash,
+        "hibiki",
+    ).proposal
+
+
 def _result(payload: object, *, returncode: int = 0, stderr: str = "") -> ProcessResult:
     return ProcessResult(returncode, json.dumps(payload), stderr)
 
@@ -74,10 +98,20 @@ def _result(payload: object, *, returncode: int = 0, stderr: str = "") -> Proces
 def _authored_post(proposal: ProposalRecord, post_id: str) -> dict[str, object]:
     return {
         "id": post_id,
-        "accountId": "builder",
         "text": proposal.draft,
         "createdAt": "2025-06-15T15:01:41Z",
     }
+
+
+def _sync_result(posts: list[dict[str, object]]) -> ProcessResult:
+    return _result(
+        {
+            "ok": True,
+            "kind": "authored",
+            "partial": False,
+            "payload": {"data": posts},
+        }
+    )
 
 
 def _publish(
@@ -112,23 +146,10 @@ def _readback_calls(proposal: ProposalRecord) -> list[tuple[tuple[str, ...], flo
                 "xurl",
                 "--limit",
                 "100",
-                "--json",
-            ),
-            30.0,
-        ),
-        (
-            (
-                "birdclaw",
-                "search",
-                "tweets",
-                "--resource",
-                "authored",
-                "--account",
-                "builder",
-                "--since",
-                SINCE,
-                "--limit",
-                "100",
+                "--since-id",
+                SINCE_ID,
+                "--until-id",
+                UNTIL_ID,
                 "--json",
             ),
             30.0,
@@ -142,8 +163,7 @@ def test_publish_persists_intent_then_reads_back_exact_birdclaw_post() -> None:
     runner = BirdClawRunner(
         [
             _result({"ok": True, "tweetId": "tweet_local"}),
-            _result({"ok": True, "kind": "authored"}),
-            _result([_authored_post(proposal, "1900000000000000000")]),
+            _sync_result([_authored_post(proposal, "1900000000000000000")]),
         ]
     )
 
@@ -175,6 +195,35 @@ def test_publish_persists_intent_then_reads_back_exact_birdclaw_post() -> None:
     assert repositories.proposals.get(proposal.stable_id) == result.proposal
 
 
+def test_readback_expands_x_url_entities_before_matching_text() -> None:
+    sekai = FakeSekaiGateway()
+    proposal = _approved_edited_proposal(
+        sekai,
+        _approved_proposal(sekai),
+        "I documented the retry contract at https://example.com/retries.",
+    )
+    authored = _authored_post(proposal, "1900000000000000002")
+    authored["text"] = "I documented the retry contract at https://t.co/abc."
+    authored["entities"] = {
+        "urls": [
+            {
+                "url": "https://t.co/abc",
+                "expanded_url": "https://example.com/retries",
+            }
+        ]
+    }
+
+    result = _publish(
+        BirdClawRunner(
+            [_result({"ok": True, "tweetId": "tweet_local"}), _sync_result([authored])]
+        ),
+        sekai,
+        proposal,
+    )
+
+    assert result.publication.post_id == "1900000000000000002"
+
+
 def test_live_write_guard_fails_before_intent_or_birdclaw_call() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)
@@ -204,8 +253,7 @@ def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
 
     reconcile_runner = BirdClawRunner(
         [
-            _result({"ok": True, "kind": "authored"}),
-            _result([_authored_post(proposal, "1900000000000000001")]),
+            _sync_result([_authored_post(proposal, "1900000000000000001")]),
         ]
     )
     result = _publish(reconcile_runner, sekai, proposal, account="changed-account")
@@ -225,9 +273,7 @@ def test_retry_requires_a_separate_no_match_reconciliation() -> None:
             proposal,
         )
 
-    reconcile_runner = BirdClawRunner(
-        [_result({"ok": True, "kind": "authored"}), _result([])]
-    )
+    reconcile_runner = BirdClawRunner([_sync_result([])])
     with pytest.raises(PublicationWorkflowError, match="retry is now safe"):
         _publish(reconcile_runner, sekai, proposal)
 
@@ -249,7 +295,45 @@ def test_pending_attempt_blocks_proposal_edits_until_reconciled() -> None:
             proposal,
         )
 
-    with pytest.raises(ProposalWorkflowError, match="needs reconciliation"):
+    with pytest.raises(ProposalWorkflowError, match="publication record is active"):
+        validate_proposal_edit(
+            fixture_runner(),
+            sekai,
+            FakeChiseiGateway(validation_response()),
+            proposal.external_id,
+            proposal.draft + " Edited.",
+            "hibiki",
+        )
+
+
+def test_completed_publication_cannot_be_attached_to_different_approved_text() -> None:
+    sekai = FakeSekaiGateway()
+    proposal = _approved_proposal(sekai)
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    repositories.publications.put(
+        PublicationRecord(
+            stable_id=proposal.stable_id,
+            proposal_external_id=proposal.external_id,
+            final_text=proposal.draft,
+            target_account="builder",
+            attempted_at=ATTEMPTED_AT,
+            status="posted",
+            approval_id=proposal.decision_ref,
+            post_id="post-old",
+        )
+    )
+    changed = repositories.proposals.put(
+        replace(
+            proposal,
+            draft=proposal.draft + " Changed after a partial persistence failure.",
+            decision_ref="approval-new",
+        )
+    )
+
+    with pytest.raises(PublicationWorkflowError, match="does not match"):
+        _publish(BirdClawRunner([]), sekai, changed)
+
+    with pytest.raises(ProposalWorkflowError, match="publication record is active"):
         validate_proposal_edit(
             fixture_runner(),
             sekai,
@@ -267,8 +351,7 @@ def test_published_result_is_idempotent_without_birdclaw_call() -> None:
         BirdClawRunner(
             [
                 _result({"ok": True, "tweetId": "tweet_local"}),
-                _result({"ok": True, "kind": "authored"}),
-                _result([_authored_post(proposal, "post-1")]),
+                _sync_result([_authored_post(proposal, "post-1")]),
             ]
         ),
         sekai,
@@ -294,3 +377,24 @@ def test_posted_publication_requires_an_x_post_identifier() -> None:
             status="posted",
             approval_id="approval-1",
         )
+
+
+def test_legacy_publication_record_round_trips_without_new_metadata() -> None:
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    legacy = PublicationRecord(
+        stable_id="publication-legacy",
+        proposal_external_id="hibiki.proposal:hibiki:proposal-legacy",
+        final_text="Legacy final text",
+        target_account="",
+        attempted_at=0,
+        status="uncertain",
+        approval_id="approval-legacy",
+        _legacy=True,
+    )
+
+    stored = repositories.publications.put(legacy)
+
+    assert stored == legacy
+    assert repositories.publications.get(legacy.stable_id) == legacy
+    assert "target_account" not in legacy.to_properties()

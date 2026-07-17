@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import ClassVar, Protocol, Self
 
 import grpc
@@ -215,6 +215,7 @@ class PublicationRecord(_Record):
     approval_id: str = ""
     approval_expires_at: str = ""
     post_id: str = ""
+    _legacy: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _require_nonempty(
@@ -222,12 +223,15 @@ class PublicationRecord(_Record):
             stable_id=self.stable_id,
             proposal_external_id=self.proposal_external_id,
             final_text=self.final_text,
-            target_account=self.target_account,
-            approval_id=self.approval_id,
         )
+        if not self._legacy:
+            _require_nonempty(
+                target_account=self.target_account,
+                approval_id=self.approval_id,
+            )
         _require_choice("status", self.status, PUBLICATION_STATUSES)
-        if self.attempted_at < 0:
-            raise RecordValidationError("attempted_at must not be negative")
+        if self.attempted_at < 0 or (not self._legacy and self.attempted_at == 0):
+            raise RecordValidationError("attempted_at must be a positive timestamp")
         if self.status == "posted" and not self.post_id.strip():
             raise RecordValidationError("posted publication must contain a post_id")
 
@@ -236,24 +240,28 @@ class PublicationRecord(_Record):
         return sha256_text(self.final_text)
 
     def _payload(self) -> dict[str, str]:
-        return {
+        payload = {
             "proposal_external_id": self.proposal_external_id,
             "final_text": self.final_text,
             "final_text_hash": self.final_text_hash,
-            "target_account": self.target_account,
-            "attempted_at": str(self.attempted_at),
             "status": self.status,
             "approval_id": self.approval_id,
             "approval_expires_at": self.approval_expires_at,
             "post_id": self.post_id,
         }
+        if not self._legacy:
+            payload["target_account"] = self.target_account
+            payload["attempted_at"] = str(self.attempted_at)
+        return payload
 
     @classmethod
     def from_properties(
         cls, namespace: str, stable_id: str, properties: Mapping[str, str]
     ) -> PublicationRecord:
+        attempted_at_raw = properties.get("attempted_at", "")
+        legacy = not properties.get("target_account") and not attempted_at_raw
         try:
-            attempted_at = int(properties.get("attempted_at", ""))
+            attempted_at = int(attempted_at_raw) if attempted_at_raw else 0
         except ValueError as error:
             raise RecordValidationError("stored publication attempted_at is invalid") from error
         record = cls(
@@ -267,6 +275,7 @@ class PublicationRecord(_Record):
             approval_id=properties.get("approval_id", ""),
             approval_expires_at=properties.get("approval_expires_at", ""),
             post_id=properties.get("post_id", ""),
+            _legacy=legacy,
         )
         if properties.get("final_text_hash") != record.final_text_hash:
             raise RecordValidationError(

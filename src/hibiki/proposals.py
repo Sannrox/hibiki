@@ -440,9 +440,9 @@ def _require_no_pending_publication(
     stable_id: str,
 ) -> None:
     publication = repositories.publications.get(stable_id)
-    if publication is not None and publication.status in {"intent", "uncertain"}:
+    if publication is not None and publication.status != "failed":
         raise ProposalWorkflowError(
-            "proposal cannot change while a publication attempt needs reconciliation"
+            "proposal cannot change while a publication record is active"
         )
 
 

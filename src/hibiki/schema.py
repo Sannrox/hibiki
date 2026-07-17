@@ -13,6 +13,7 @@ class SchemaConflictError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class RegistrationResult:
     created: tuple[str, ...]
+    updated: tuple[str, ...]
     unchanged: tuple[str, ...]
 
 
@@ -75,13 +76,10 @@ HIBIKI_SCHEMA_TYPES = (
             ),
             _property("final_text", required=True, description="Exact text intended for X."),
             _property("final_text_hash", required=True, description="Approved text SHA-256."),
-            _property(
-                "target_account", required=True, description="BirdClaw account selected for X."
-            ),
+            _property("target_account", description="BirdClaw account selected for X."),
             _property(
                 "attempted_at",
                 "timestamp",
-                required=True,
                 description="Time immediately before the first external write attempt.",
             ),
             _property(
@@ -93,7 +91,6 @@ HIBIKI_SCHEMA_TYPES = (
             ),
             _property(
                 "approval_id",
-                required=True,
                 description="Hash-bound approval reference.",
             ),
             _property(
@@ -162,12 +159,17 @@ def register_schema_types(gateway: SekaiGateway) -> RegistrationResult:
 
     for desired in HIBIKI_SCHEMA_TYPES:
         existing = existing_by_kind.get(desired.kind)
-        if existing is not None and existing != desired:
+        if (
+            existing is not None
+            and existing != desired
+            and not _is_supported_migration(existing, desired)
+        ):
             raise SchemaConflictError(
                 f"Sekai schema type {desired.kind!r} differs from Hibiki's accepted definition"
             )
 
     created: list[str] = []
+    updated: list[str] = []
     unchanged: list[str] = []
 
     for desired in HIBIKI_SCHEMA_TYPES:
@@ -175,7 +177,35 @@ def register_schema_types(gateway: SekaiGateway) -> RegistrationResult:
         if existing is None:
             gateway.create_schema_type(desired)
             created.append(desired.kind)
+        elif existing != desired:
+            gateway.create_schema_type(desired)
+            updated.append(desired.kind)
         else:
             unchanged.append(desired.kind)
 
-    return RegistrationResult(tuple(created), tuple(unchanged))
+    return RegistrationResult(tuple(created), tuple(updated), tuple(unchanged))
+
+
+def _is_supported_migration(
+    existing: sekai_pb2.ObjectType,
+    desired: sekai_pb2.ObjectType,
+) -> bool:
+    if desired.kind != "hibiki.publication":
+        return False
+    required_metadata = sekai_pb2.ObjectType()
+    required_metadata.CopyFrom(desired)
+    for property_ in required_metadata.properties:
+        if property_.name in {"target_account", "attempted_at", "approval_id"}:
+            property_.required = True
+    if existing == required_metadata:
+        return True
+    legacy = sekai_pb2.ObjectType()
+    legacy.CopyFrom(desired)
+    retained = [
+        property_
+        for property_ in legacy.properties
+        if property_.name not in {"target_account", "attempted_at"}
+    ]
+    del legacy.properties[:]
+    legacy.properties.extend(retained)
+    return existing == legacy

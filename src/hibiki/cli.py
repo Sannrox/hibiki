@@ -113,6 +113,7 @@ def run(
                 "command": command,
                 "ok": True,
                 "created": result.created,
+                "updated": result.updated,
                 "unchanged": result.unchanged,
             },
         )

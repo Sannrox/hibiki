@@ -159,6 +159,7 @@ def test_schema_command_reports_created_and_unchanged_types() -> None:
         "hibiki.hypothesis",
     ]
     assert second_payload["created"] == []
+    assert first_payload["updated"] == second_payload["updated"] == []
     assert second_payload["unchanged"] == first_payload["created"]
     assert first_diagnostics == second_diagnostics == ""
 

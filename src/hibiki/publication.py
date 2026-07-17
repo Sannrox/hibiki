@@ -5,7 +5,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from hibiki.boundaries import ProcessResult, ProcessRunner
 from hibiki.proposals import ProposalWorkflowError, proposal_lock, require_current_approval
@@ -14,6 +14,7 @@ from hibiki.sekai import SekaiGateway
 
 BIRDCLAW_TIMEOUT_SECONDS = 30.0
 AUTHORED_LOOKBACK = timedelta(minutes=5)
+X_SNOWFLAKE_EPOCH_MS = 1_288_834_974_657
 
 
 class PublicationWorkflowError(RuntimeError):
@@ -53,6 +54,7 @@ def publish_proposal(
         if publication is not None:
             _require_publication_owner(publication, proposal)
             if publication.status == "posted":
+                _require_matching_completed_publication(publication, proposal)
                 proposal = _mark_proposal_published(repositories, proposal)
                 return PublicationResult(proposal, publication, True)
             if publication.status in {"intent", "uncertain"}:
@@ -128,6 +130,7 @@ def _reconcile_prior_attempt(
     posted = repositories.publications.put(
         replace(publication, status="posted", post_id=post_id)
     )
+    _require_matching_completed_publication(posted, proposal)
     proposal = _mark_proposal_published(repositories, proposal)
     return PublicationResult(proposal, posted, True)
 
@@ -161,8 +164,10 @@ def _find_authored_post(
     process_runner: ProcessRunner,
     publication: PublicationRecord,
 ) -> str | None:
+    _require_reconciliation_metadata(publication)
     account = publication.target_account
-    _run_json_object(
+    since_id, until_id = _authored_snowflake_window(publication.attempted_at)
+    response = _run_json_object(
         process_runner,
         (
             "birdclaw",
@@ -174,34 +179,25 @@ def _find_authored_post(
             "xurl",
             "--limit",
             "100",
+            "--since-id",
+            since_id,
+            "--until-id",
+            until_id,
             "--json",
         ),
         "sync authored",
     )
-    since = _authored_since(publication.attempted_at)
-    posts = _run_json_list(
-        process_runner,
-        (
-            "birdclaw",
-            "search",
-            "tweets",
-            "--resource",
-            "authored",
-            "--account",
-            account,
-            "--since",
-            since,
-            "--limit",
-            "100",
-            "--json",
-        ),
-        "search tweets",
-    )
+    if response.get("ok") is not True or response.get("partial") is not False:
+        raise PublicationWorkflowError("BirdClaw authored sync did not exhaust the retry window")
+    payload = response.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise PublicationWorkflowError("BirdClaw authored sync returned no tweet payload")
+    posts = payload["data"]
     matches: list[str] = []
     for post in posts:
         if not isinstance(post, dict):
-            raise PublicationWorkflowError("BirdClaw search tweets returned an invalid item")
-        if post.get("accountId") != account or post.get("text") != publication.final_text:
+            raise PublicationWorkflowError("BirdClaw authored sync returned an invalid tweet")
+        if _canonical_post_text(post) != publication.final_text:
             continue
         post_id = post.get("id")
         if not isinstance(post_id, str) or not post_id.strip():
@@ -214,9 +210,33 @@ def _find_authored_post(
     return matches[0] if matches else None
 
 
-def _authored_since(attempted_at: int) -> str:
-    attempted = datetime.fromtimestamp(attempted_at / 1000, tz=UTC)
-    return (attempted - AUTHORED_LOOKBACK).isoformat().replace("+00:00", "Z")
+def _authored_snowflake_window(attempted_at: int) -> tuple[str, str]:
+    lookback_ms = int(AUTHORED_LOOKBACK.total_seconds() * 1000)
+    lower_ms = max(X_SNOWFLAKE_EPOCH_MS, attempted_at - lookback_ms)
+    upper_ms = max(X_SNOWFLAKE_EPOCH_MS, attempted_at + lookback_ms)
+    since_id = max(0, ((lower_ms - X_SNOWFLAKE_EPOCH_MS) << 22) - 1)
+    until_id = ((upper_ms - X_SNOWFLAKE_EPOCH_MS + 1) << 22)
+    return str(since_id), str(until_id)
+
+
+def _canonical_post_text(post: dict[object, object]) -> str:
+    text = post.get("text")
+    if not isinstance(text, str):
+        raise PublicationWorkflowError("BirdClaw authored post has no text")
+    entities = post.get("entities")
+    if not isinstance(entities, dict):
+        return text
+    urls = entities.get("urls")
+    if not isinstance(urls, list):
+        return text
+    for item in urls:
+        if not isinstance(item, dict):
+            continue
+        short = item.get("url")
+        expanded = item.get("expanded_url") or item.get("expandedUrl")
+        if isinstance(short, str) and isinstance(expanded, str):
+            text = text.replace(short, expanded)
+    return text
 
 
 def _run_json_object(
@@ -227,17 +247,6 @@ def _run_json_object(
     payload = _run_json(process_runner, argv, command)
     if not isinstance(payload, dict):
         raise PublicationWorkflowError(f"BirdClaw {command} must return one JSON object")
-    return payload
-
-
-def _run_json_list(
-    process_runner: ProcessRunner,
-    argv: tuple[str, ...],
-    command: str,
-) -> list[object]:
-    payload = _run_json(process_runner, argv, command)
-    if not isinstance(payload, list):
-        raise PublicationWorkflowError(f"BirdClaw {command} must return one JSON array")
     return payload
 
 
@@ -267,6 +276,26 @@ def _require_publication_owner(
 ) -> None:
     if publication.proposal_external_id != proposal.external_id:
         raise PublicationWorkflowError("stored publication intent belongs to another proposal")
+
+
+def _require_reconciliation_metadata(publication: PublicationRecord) -> None:
+    if not publication.target_account or publication.attempted_at <= 0:
+        raise PublicationWorkflowError(
+            "legacy publication intent needs target-account and attempt-time migration"
+        )
+
+
+def _require_matching_completed_publication(
+    publication: PublicationRecord,
+    proposal: ProposalRecord,
+) -> None:
+    if (
+        publication.final_text != proposal.draft
+        or publication.approval_id != proposal.decision_ref
+    ):
+        raise PublicationWorkflowError(
+            "completed publication does not match the proposal's approved text"
+        )
 
 
 def _mark_proposal_published(
