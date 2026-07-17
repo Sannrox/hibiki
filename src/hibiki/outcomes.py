@@ -172,7 +172,7 @@ def confirm_classification(
         confirmation = existing
     evaluations = sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
     evaluated_targets = {item.target_id for item in evaluations}
-    recoverable = len(evaluations) < 500 or confirmation.timestamp >= min(
+    recoverable = len(evaluations) < 500 or confirmation.timestamp > min(
         item.timestamp for item in evaluations
     )
     if submission_id not in evaluated_targets and recoverable:
