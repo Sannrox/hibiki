@@ -9,6 +9,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import grpc
+
 from hibiki.boundaries import ProcessRunner
 from hibiki.contracts import sekai_pb2
 from hibiki.publication import _authored_snowflake_window
@@ -30,6 +32,8 @@ WINDOW_TOLERANCE_MILLISECONDS = {
     "7d": 24 * 60 * 60 * 1000,
 }
 REGISTRATION_ACTION = "hibiki.evidence_contract_registered"
+COLLECTION_ACTION = "hibiki.evidence_collection_completed"
+MAX_REGISTRATION_VERSION_ATTEMPTS = 100
 METRIC_FIELDS = {
     "impressions": "impression_count",
     "likes": "like_count",
@@ -81,10 +85,10 @@ def register_evidence_contracts(
         if version <= 0:
             raise EvidenceWorkflowError("stored evidence producer registration is invalid")
         previous_versions.append(version)
-    config_version = max(previous_versions, default=0) + 1
+    requested_version = max(previous_versions, default=0) + 1
     capability = sekai_pb2.EvidenceProducerCapability(
         producer_identity=PRODUCER_IDENTITY,
-        config_version=config_version,
+        config_version=requested_version,
         source_types=(SOURCE_TYPE,),
         source_instances=(source_instance,),
         namespaces=(namespace,),
@@ -100,13 +104,13 @@ def register_evidence_contracts(
         rate_limit_per_minute=600,
         max_retained_submissions=100_000,
     )
+    config_version = _register_producer(gateway, capability)
     fingerprint_input = sekai_pb2.EvidenceProducerCapability()
     fingerprint_input.CopyFrom(capability)
     fingerprint_input.config_version = 0
     fingerprint = hashlib.sha256(
         fingerprint_input.SerializeToString(deterministic=True)
     ).hexdigest()
-    gateway.register_evidence_producer(capability)
     gateway.record_decision(
         sekai_pb2.Decision(
             id=str(
@@ -175,12 +179,13 @@ def collect_publication_evidence(
         None,
     )
     existing_replies = _list_submissions(sekai, publication.external_id, REPLY_TYPE)
+    completion = _collection_completion(sekai, publication.external_id, publication.post_id, window)
     if now_ms > (
         publication.attempted_at
         + WINDOW_MILLISECONDS[window]
         + WINDOW_TOLERANCE_MILLISECONDS[window]
     ):
-        if snapshot is None:
+        if snapshot is None or completion is None:
             raise EvidenceWorkflowError(f"{window} evidence window has expired")
         return CollectionResult(
             publication.external_id,
@@ -264,6 +269,15 @@ def collect_publication_evidence(
     reply_submission_ids.extend(
         item.id for item in submitted_by_type.get(REPLY_TYPE, ())
     )
+    if completion is None:
+        _record_collection_completion(
+            sekai,
+            publication,
+            window,
+            snapshot.id,
+            len(existing_replies) + len(reply_submission_ids),
+            now_ms,
+        )
 
     return CollectionResult(
         publication.external_id,
@@ -273,6 +287,82 @@ def collect_publication_evidence(
         snapshot_deduplicated,
         tuple(reply_submission_ids),
         replies_deduplicated,
+    )
+
+
+def _register_producer(
+    gateway: SekaiGateway, capability: sekai_pb2.EvidenceProducerCapability
+) -> int:
+    first_version = capability.config_version
+    for config_version in range(
+        first_version, first_version + MAX_REGISTRATION_VERSION_ATTEMPTS
+    ):
+        capability.config_version = config_version
+        try:
+            gateway.register_evidence_producer(capability)
+        except grpc.RpcError as error:
+            if error.code() == grpc.StatusCode.INVALID_ARGUMENT and (
+                error.details() and "config version must increase" in error.details()
+            ):
+                continue
+            raise
+        return config_version
+    raise EvidenceWorkflowError(
+        "could not negotiate the evidence producer config version; "
+        "inspect the Sekai producer registration"
+    )
+
+
+def _collection_completion(
+    sekai: SekaiGateway,
+    publication_external_id: str,
+    post_id: str,
+    window: str,
+) -> sekai_pb2.Decision | None:
+    return next(
+        (
+            decision
+            for decision in sekai.list_decisions(
+                actor="hibiki", action=COLLECTION_ACTION, limit=1_000
+            )
+            if decision.target_id == publication_external_id
+            and decision.outcome == "success"
+            and decision.evidence.get("post_id") == post_id
+            and decision.evidence.get("window") == window
+        ),
+        None,
+    )
+
+
+def _record_collection_completion(
+    sekai: SekaiGateway,
+    publication: PublicationRecord,
+    window: str,
+    snapshot_submission_id: str,
+    reply_count: int,
+    completed_at_ms: int,
+) -> None:
+    sekai.record_decision(
+        sekai_pb2.Decision(
+            id=str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{COLLECTION_ACTION}:{publication.external_id}:{window}",
+                )
+            ),
+            timestamp=completed_at_ms,
+            actor="hibiki",
+            action=COLLECTION_ACTION,
+            reason="All planned BirdClaw evidence envelopes were projected.",
+            evidence={
+                "post_id": publication.post_id,
+                "window": window,
+                "snapshot_submission_id": snapshot_submission_id,
+                "reply_count": str(reply_count),
+            },
+            target_id=publication.external_id,
+            outcome="success",
+        )
     )
 
 

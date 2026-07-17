@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+import grpc
 import pytest
 
 from hibiki.boundaries import ProcessResult
@@ -29,6 +30,47 @@ class SequenceRunner:
     def run(self, argv: tuple[str, ...], timeout: float) -> ProcessResult:
         self.calls.append((argv, timeout))
         return self.results.pop(0)
+
+
+class FakeRpcError(grpc.RpcError):
+    def __init__(self, code: grpc.StatusCode, details: str) -> None:
+        self._code = code
+        self._details = details
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
+
+    def details(self) -> str:
+        return self._details
+
+    def __str__(self) -> str:
+        return self._details
+
+
+@dataclass
+class VersionedFakeSekaiGateway(FakeSekaiGateway):
+    producer_version: int = 0
+
+    def register_evidence_producer(self, capability) -> None:
+        if capability.config_version <= self.producer_version:
+            raise FakeRpcError(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "producer config version must increase",
+            )
+        self.producer_version = capability.config_version
+        super().register_evidence_producer(capability)
+
+
+@dataclass
+class FailingSubmissionGateway(FakeSekaiGateway):
+    fail_on_submission: int = 2
+    submission_attempts: int = 0
+
+    def submit_evidence(self, envelope):
+        self.submission_attempts += 1
+        if self.submission_attempts == self.fail_on_submission:
+            raise FakeRpcError(grpc.StatusCode.UNAVAILABLE, "temporary outage")
+        return super().submit_evidence(envelope)
 
 
 def _json_result(payload: object, *, returncode: int = 0) -> ProcessResult:
@@ -145,6 +187,17 @@ def test_registration_versions_each_reconciliation_and_applies_runtime_changes()
         if decision.action == "hibiki.evidence_contract_registered"
     ]
     assert len(registration_decisions) == 3
+
+
+def test_registration_negotiates_past_an_unrecorded_existing_version() -> None:
+    gateway = VersionedFakeSekaiGateway(producer_version=1)
+
+    register_evidence_contracts(gateway, "hibiki", "builder")
+
+    assert gateway.producer_version == 2
+    assert [item.config_version for item in gateway.evidence_producers] == [2]
+    registration = next(iter(gateway.decisions.values()))
+    assert registration.evidence["config_version"] == "2"
 
 
 def test_collects_raw_snapshot_and_replies_onto_the_publication() -> None:
@@ -305,6 +358,39 @@ def test_validates_reply_collection_before_submitting_the_snapshot() -> None:
         )
 
     assert gateway.evidence_envelopes == []
+
+
+def test_expired_retry_rejects_a_collection_without_a_completion_marker() -> None:
+    gateway = FailingSubmissionGateway()
+    publication = _posted_publication(gateway)
+    runner = SequenceRunner([_json_result(_authored_payload()), _json_result(_mentions_payload())])
+
+    with pytest.raises(FakeRpcError, match="temporary outage"):
+        collect_publication_evidence(
+            runner,
+            gateway,
+            publication.external_id,
+            "builder",
+            "hibiki",
+            "7d",
+            clock_ms=lambda: NOW_MS,
+        )
+
+    assert [item.evidence_type for item in gateway.evidence_envelopes] == [SNAPSHOT_TYPE]
+    assert not any(
+        decision.action == "hibiki.evidence_collection_completed"
+        for decision in gateway.decisions.values()
+    )
+    with pytest.raises(EvidenceWorkflowError, match="7d evidence window has expired"):
+        collect_publication_evidence(
+            SequenceRunner([]),
+            gateway,
+            publication.external_id,
+            "builder",
+            "hibiki",
+            "7d",
+            clock_ms=lambda: NOW_MS + 2 * 24 * 60 * 60 * 1000,
+        )
 
 
 def test_refuses_collection_before_the_requested_window() -> None:
