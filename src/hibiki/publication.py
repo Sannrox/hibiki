@@ -272,7 +272,7 @@ def _safe_x_text_weight(text: str) -> int:
         character if _is_linkable_character(character) else " " for character in text
     ]
     linkifier = LinkifyIt()
-    linkified_urls = _linkified_url_mask(
+    linkified_components = _linkified_url_component_mask(
         text,
         linkifier.match("".join(linkable_characters)) or [],
     )
@@ -283,10 +283,15 @@ def _safe_x_text_weight(text: str) -> int:
             text,
             protocol.start(),
             recognized_urls,
-            linkified_urls[protocol.start()]
-            and (
-                valid_general_url_path_chars.fullmatch(text[protocol.start() - 1])
-                or valid_url_query_chars.fullmatch(text[protocol.start() - 1])
+            (
+                linkified_components[protocol.start()] == 1
+                and valid_general_url_path_chars.fullmatch(
+                    text[protocol.start() - 1]
+                )
+            )
+            or (
+                linkified_components[protocol.start()] == 2
+                and valid_url_query_chars.fullmatch(text[protocol.start() - 1])
             ),
         ):
             linkable_characters[protocol.start() - 1] = " "
@@ -332,14 +337,21 @@ def _recognized_url_mask(
     return recognized
 
 
-def _linkified_url_mask(text: str, matches: list[object]) -> bytearray:
-    linkified = bytearray(len(text))
+def _linkified_url_component_mask(text: str, matches: list[object]) -> bytearray:
+    components = bytearray(len(text))
     for match in matches:
         if match.schema in {"http:", "https:"}:
-            linkified[match.index : match.last_index] = b"\1" * (
-                match.last_index - match.index
+            query_offset = match.raw.find("?")
+            path_end = (
+                match.last_index
+                if query_offset == -1
+                else match.index + query_offset
             )
-    return linkified
+            components[match.index:path_end] = b"\1" * (path_end - match.index)
+            components[path_end : match.last_index] = b"\2" * (
+                match.last_index - path_end
+            )
+    return components
 
 
 def _run_json_object(

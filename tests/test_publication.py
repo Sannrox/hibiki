@@ -362,6 +362,12 @@ def test_x_delimiter_splits_protocol_inside_linkifier_span() -> None:
     assert _safe_x_text_weight(text) == 282
 
 
+def test_path_only_character_splits_protocol_inside_query() -> None:
+    text = f"{'a' * 233} https://a.music/?q=éhttps://b.music"
+
+    assert _safe_x_text_weight(text) == 281
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)
