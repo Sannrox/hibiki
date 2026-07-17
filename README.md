@@ -63,3 +63,12 @@ idempotent and fails visibly if an existing definition has drifted:
 ```sh
 uv run hibiki schema
 ```
+
+Discover new public default-branch commits since the last successful scan and
+ask Chisei to return one eligible source or an explicit no-candidate result.
+The command performs local sensitive-data preflight before model execution and
+records the selection decision and Chisei operation receipt in Sekai:
+
+```sh
+uv run hibiki recommend
+```

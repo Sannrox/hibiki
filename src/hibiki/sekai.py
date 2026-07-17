@@ -21,6 +21,12 @@ class SekaiGateway(Protocol):
 
     def update_object(self, object_: sekai_pb2.Object) -> sekai_pb2.Object: ...
 
+    def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision: ...
+
+    def list_decisions(
+        self, *, actor: str, action: str, limit: int
+    ) -> tuple[sekai_pb2.Decision, ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class NativeSekaiGateway:
@@ -81,3 +87,23 @@ class NativeSekaiGateway:
                 metadata=self._metadata,
             )
         return response.object
+
+    def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision:
+        with grpc.insecure_channel(self.target) as channel:
+            response = sekai_pb2_grpc.SekaiServiceStub(channel).RecordDecision(
+                sekai_pb2.RecordDecisionRequest(decision=decision),
+                timeout=self.timeout,
+                metadata=self._metadata,
+            )
+        return response.decision
+
+    def list_decisions(
+        self, *, actor: str, action: str, limit: int
+    ) -> tuple[sekai_pb2.Decision, ...]:
+        with grpc.insecure_channel(self.target) as channel:
+            response = sekai_pb2_grpc.SekaiServiceStub(channel).ListDecisions(
+                sekai_pb2.ListDecisionsRequest(actor=actor, action=action, limit=limit),
+                timeout=self.timeout,
+                metadata=self._metadata,
+            )
+        return tuple(response.decisions)

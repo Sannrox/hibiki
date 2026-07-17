@@ -14,12 +14,17 @@ from hibiki.boundaries import (
     ProcessRunner,
     SubprocessRunner,
 )
+from hibiki.chisei import ChiseiGateway, NativeChiseiGateway
 from hibiki.config import ConfigurationError, Settings
+from hibiki.discovery import DiscoveryError
 from hibiki.health import Check, run_health_checks, serialize_checks
+from hibiki.recommendation import recommend_source
+from hibiki.records import RecordConflictError, RecordValidationError
 from hibiki.schema import SchemaConflictError, register_schema_types
 from hibiki.sekai import NativeSekaiGateway, SekaiGateway
+from hibiki.selection import SelectionError
 
-USAGE = "usage: hibiki <health|config|schema> [--timeout SECONDS]"
+USAGE = "usage: hibiki <health|config|schema|recommend> [--timeout SECONDS]"
 
 
 def run(
@@ -31,6 +36,7 @@ def run(
     process_runner: ProcessRunner,
     grpc_probe: GrpcHealthProbe,
     sekai_gateway: SekaiGateway | None = None,
+    chisei_gateway: ChiseiGateway | None = None,
 ) -> int:
     if not argv or argv[0] in {"-h", "--help"}:
         _emit(stdout, {"ok": True, "usage": USAGE})
@@ -42,9 +48,9 @@ def run(
     except ValueError as error:
         return _usage_error(stdout, stderr, str(error))
 
-    if command not in {"health", "config", "schema"}:
+    if command not in {"health", "config", "schema", "recommend"}:
         return _usage_error(stdout, stderr, f"unknown command: {command}")
-    if command in {"config", "schema"} and len(argv) != 1:
+    if command in {"config", "schema", "recommend"} and len(argv) != 1:
         return _usage_error(stdout, stderr, f"{command} does not accept arguments")
 
     try:
@@ -84,6 +90,56 @@ def run(
                 "ok": True,
                 "created": result.created,
                 "unchanged": result.unchanged,
+            },
+        )
+        return 0
+
+    if command == "recommend":
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        chisei = chisei_gateway or NativeChiseiGateway(settings.chisei_target)
+        try:
+            result = recommend_source(
+                process_runner,
+                sekai,
+                chisei,
+                settings.tenkai_repository,
+                settings.namespace,
+            )
+        except (
+            DiscoveryError,
+            SelectionError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "recommendation_failed", str(error))
+            print(f"hibiki: recommendation failed: {error}", file=stderr)
+            return 1
+        candidate = None
+        if result.candidate is not None and result.source is not None:
+            candidate = {
+                "revision": result.candidate.revision,
+                "topic": result.candidate.topic,
+                "reason": result.candidate.reason,
+                "scores": result.candidate.scores,
+                "source_external_id": result.source.external_id,
+                "public_url": result.source.public_url,
+                "evidence_hash": result.source.evidence_hash,
+            }
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "candidate": candidate,
+                "reason": result.reason,
+                "decision_id": result.decision_id,
+                "operation_id": result.operation_id,
+                "operation_receipt": {
+                    "complete": result.receipt_complete,
+                    "missing_surfaces": result.missing_surfaces,
+                },
+                "scanned_at": result.scanned_at,
             },
         )
         return 0

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from hibiki.boundaries import ProbeResult, ProcessResult
-from hibiki.contracts import sekai_pb2
+from hibiki.contracts import chisei_pb2, sekai_pb2
 
 
 @dataclass
@@ -29,12 +29,61 @@ class FakeGrpcHealthProbe:
 
 
 @dataclass
+class FakeChiseiGateway:
+    content: str
+    plan_id: str = "operation-1"
+    provider: str = "local"
+    model: str = "fixture-model"
+    receipt_json: str = '{"operation_id":"operation-1"}'
+    receipt_complete: bool = True
+    missing_surfaces: tuple[str, ...] = ()
+    plan_requests: list[chisei_pb2.PlanExecutionRequest] = field(default_factory=list)
+    executed_plans: list[str] = field(default_factory=list)
+    receipt_requests: list[chisei_pb2.GetOperationReceiptRequest] = field(default_factory=list)
+
+    def plan_execution(self, request: chisei_pb2.PlanExecutionRequest) -> chisei_pb2.ExecutionPlan:
+        copied = chisei_pb2.PlanExecutionRequest()
+        copied.CopyFrom(request)
+        self.plan_requests.append(copied)
+        return chisei_pb2.ExecutionPlan(
+            plan_id=self.plan_id,
+            input=request.input,
+            resolved_model=self.model,
+            executable=True,
+            budget=chisei_pb2.BudgetVerdict(allowed=True),
+        )
+
+    def execute_plan(self, plan: chisei_pb2.ExecutionPlan) -> chisei_pb2.ExecutePlanResponse:
+        self.executed_plans.append(plan.plan_id)
+        return chisei_pb2.ExecutePlanResponse(
+            response=chisei_pb2.PlannedChatResponse(
+                content=self.content,
+                provider=self.provider,
+            ),
+            executed_at=1_750_000_000_000,
+        )
+
+    def get_operation_receipt(
+        self, request: chisei_pb2.GetOperationReceiptRequest
+    ) -> chisei_pb2.GetOperationReceiptResponse:
+        copied = chisei_pb2.GetOperationReceiptRequest()
+        copied.CopyFrom(request)
+        self.receipt_requests.append(copied)
+        return chisei_pb2.GetOperationReceiptResponse(
+            receipt_json=self.receipt_json,
+            complete=self.receipt_complete,
+            missing_surfaces=self.missing_surfaces,
+        )
+
+
+@dataclass
 class FakeSekaiGateway:
     schema_types: dict[str, sekai_pb2.ObjectType] = field(default_factory=dict)
     objects: dict[str, sekai_pb2.Object] = field(default_factory=dict)
     schema_creates: list[str] = field(default_factory=list)
     object_creates: list[str] = field(default_factory=list)
     object_updates: list[str] = field(default_factory=list)
+    decisions: dict[str, sekai_pb2.Decision] = field(default_factory=dict)
 
     def list_schema_types(self) -> tuple[sekai_pb2.ObjectType, ...]:
         return tuple(self.schema_types.values())
@@ -71,3 +120,19 @@ class FakeSekaiGateway:
         self.objects[stored.id] = stored
         self.object_updates.append(stored.external_id)
         return stored
+
+    def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision:
+        stored = sekai_pb2.Decision()
+        stored.CopyFrom(decision)
+        self.decisions[stored.id] = stored
+        return stored
+
+    def list_decisions(
+        self, *, actor: str, action: str, limit: int
+    ) -> tuple[sekai_pb2.Decision, ...]:
+        matches = [
+            decision
+            for decision in self.decisions.values()
+            if (not actor or decision.actor == actor) and (not action or decision.action == action)
+        ]
+        return tuple(sorted(matches, key=lambda decision: decision.timestamp, reverse=True)[:limit])

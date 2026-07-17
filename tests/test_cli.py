@@ -6,7 +6,14 @@ import subprocess
 
 from hibiki.boundaries import ProbeResult, ProcessResult
 from hibiki.cli import run
-from tests.fakes import FakeGrpcHealthProbe, FakeProcessRunner, FakeSekaiGateway
+from hibiki.contracts import sekai_pb2
+from tests.fakes import (
+    FakeChiseiGateway,
+    FakeGrpcHealthProbe,
+    FakeProcessRunner,
+    FakeSekaiGateway,
+)
+from tests.test_discovery import fixture_runner
 
 
 def environment() -> dict[str, str]:
@@ -24,6 +31,7 @@ def invoke(
     process_runner: FakeProcessRunner | None = None,
     grpc_probe: FakeGrpcHealthProbe | None = None,
     sekai_gateway: FakeSekaiGateway | None = None,
+    chisei_gateway: FakeChiseiGateway | None = None,
 ) -> tuple[int, dict[str, object], str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -35,6 +43,7 @@ def invoke(
         process_runner=process_runner or FakeProcessRunner(),
         grpc_probe=grpc_probe or FakeGrpcHealthProbe(),
         sekai_gateway=sekai_gateway,
+        chisei_gateway=chisei_gateway,
     )
     return exit_code, json.loads(stdout.getvalue()), stderr.getvalue()
 
@@ -150,3 +159,48 @@ def test_schema_command_reports_created_and_unchanged_types() -> None:
     assert second_payload["created"] == []
     assert second_payload["unchanged"] == first_payload["created"]
     assert first_diagnostics == second_diagnostics == ""
+
+
+def test_recommend_command_returns_grounded_candidate_and_receipt_status() -> None:
+    sekai = FakeSekaiGateway()
+    sekai.record_decision(
+        sekai_pb2.Decision(
+            id="prior-scan",
+            timestamp=100,
+            actor="hibiki",
+            action="hibiki.source_scan",
+            evidence={"scanned_at": "2026-07-16T09:00:00Z"},
+            target_id="example/tenkai",
+            outcome="success",
+        )
+    )
+    chisei = FakeChiseiGateway(
+        json.dumps(
+            {
+                "candidate": {
+                    "revision": "abc123",
+                    "topic": "Deterministic retries",
+                    "reason": "Concrete invariant with passing tests.",
+                    "scores": {
+                        "usefulness": 90,
+                        "novelty": 80,
+                        "evidence_strength": 95,
+                        "audience_relevance": 85,
+                    },
+                }
+            }
+        )
+    )
+
+    exit_code, payload, diagnostics = invoke(
+        ["recommend"],
+        process_runner=fixture_runner(),  # type: ignore[arg-type]
+        sekai_gateway=sekai,
+        chisei_gateway=chisei,
+    )
+
+    assert exit_code == 0
+    assert payload["candidate"]["revision"] == "abc123"
+    assert payload["candidate"]["public_url"].endswith("/commit/abc123")
+    assert payload["operation_receipt"] == {"complete": True, "missing_surfaces": []}
+    assert diagnostics == ""
