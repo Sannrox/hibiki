@@ -127,9 +127,7 @@ def _mentions_payload() -> dict[str, object]:
                     "text": "How does the retry boundary work?",
                     "created_at": "2025-06-23T10:00:00Z",
                     "conversation_id": "1900000000000000000",
-                    "referenced_tweets": [
-                        {"type": "replied_to", "id": "1900000000000000000"}
-                    ],
+                    "referenced_tweets": [{"type": "replied_to", "id": "1900000000000000000"}],
                     "public_metrics": {
                         "impression_count": 30,
                         "like_count": 3,
@@ -255,6 +253,18 @@ def test_collects_raw_snapshot_and_replies_onto_the_publication() -> None:
     }
     assert all(envelope.content_digest for envelope in gateway.evidence_envelopes)
     assert "digest" not in json.loads(snapshot.content_json)
+    outcome = CausalRepositories.create(gateway, "hibiki").outcomes.get(
+        f"{publication.stable_id}:7d"
+    )
+    assert outcome is not None
+    assert outcome.metrics == {
+        "impressions": 1200,
+        "likes": 22,
+        "quotes": 2,
+        "replies": 1,
+        "reposts": 4,
+    }
+    assert outcome.qualified_replies == 0
 
 
 def test_duplicate_collection_reuses_snapshot_and_reply_submissions() -> None:

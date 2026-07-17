@@ -171,6 +171,7 @@ def test_outcome_command_returns_final_lineage() -> None:
     from hibiki.evidence import SNAPSHOT_TYPE
     from hibiki.outcomes import classify_replies, confirm_classification
     from tests.test_outcomes import (
+        add_raw_outcome,
         add_submission,
         classification_payload,
         setup_publication,
@@ -184,6 +185,18 @@ def test_outcome_command_returns_final_lineage() -> None:
         submission_id="snapshot-7d",
         source_record_id=publication.post_id,
         source_version="7d:complete-v2",
+    )
+    add_raw_outcome(
+        sekai,
+        publication,
+        "7d",
+        metrics={
+            "impressions": 100,
+            "likes": 2,
+            "replies": 1,
+            "reposts": 1,
+            "quotes": 0,
+        },
     )
     chisei = FakeChiseiGateway(
         (

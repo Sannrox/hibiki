@@ -215,6 +215,15 @@ def build_outcome_report(
     )
     if len(snapshots) != 1:
         raise OutcomeWorkflowError(f"exactly one complete {window} snapshot is required")
+    repositories = CausalRepositories.create(sekai, namespace, clock_ms=clock_ms)
+    raw_outcome = repositories.outcomes.get(f"{publication.stable_id}:{window}")
+    if raw_outcome is None:
+        raise OutcomeWorkflowError("deterministically collected raw outcome metrics were not found")
+    if (
+        raw_outcome.publication_external_id != publication.external_id
+        or raw_outcome.observed_at != snapshots[0].observed_at_ms
+    ):
+        raise OutcomeWorkflowError("raw outcome metrics do not match the selected snapshot")
     classification_result = classify_replies(
         sekai, chisei, publication.external_id, namespace, clock_ms=clock_ms
     )
@@ -254,18 +263,17 @@ def build_outcome_report(
     )
     if proposal is None:
         raise OutcomeWorkflowError("publication proposal record was not found")
-    metrics = _execute_metrics(chisei, snapshots[0], namespace)
     qualified = sum(
         categories[item.submission_id] in QUALIFIED_CATEGORIES for item in window_classifications
     )
     observed_at = snapshots[0].observed_at_ms
-    outcome = CausalRepositories.create(sekai, namespace, clock_ms=clock_ms).outcomes.put(
+    outcome = repositories.outcomes.put(
         OutcomeRecord(
             stable_id=f"{publication.stable_id}:{window}",
             publication_external_id=publication.external_id,
             window=window,
             observed_at=observed_at,
-            metrics=metrics,
+            metrics=raw_outcome.metrics,
             qualified_replies=qualified,
         )
     )
@@ -342,40 +350,6 @@ def _execute_classification(
         seen.add(submission_id)
         parsed.append(item)
     return parsed, operation_id
-
-
-def _execute_metrics(
-    chisei: ChiseiGateway,
-    snapshot: sekai_pb2.EvidenceSubmissionRecord,
-    namespace: str,
-) -> dict[str, int]:
-    spec = {
-        "task": (
-            "Return raw metrics from the governed social.post_snapshot evidence "
-            "without interpretation."
-        ),
-        "evidence_submission_id": snapshot.id,
-        "response_schema": {
-            "metrics": {
-                "impressions": "non-negative integer",
-                "likes": "non-negative integer",
-                "replies": "non-negative integer",
-                "reposts": "non-negative integer",
-                "quotes": "non-negative integer",
-            }
-        },
-    }
-    content, _ = _execute(chisei, namespace, "outcome_reporting", spec, 500)
-    payload = _json_object(content, "outcome")
-    metrics = payload.get("metrics")
-    expected = {"impressions", "likes", "replies", "reposts", "quotes"}
-    if (
-        not isinstance(metrics, dict)
-        or set(metrics) != expected
-        or any(type(value) is not int or value < 0 for value in metrics.values())
-    ):
-        raise OutcomeWorkflowError("Chisei outcome metrics are invalid")
-    return dict(metrics)
 
 
 def _execute(

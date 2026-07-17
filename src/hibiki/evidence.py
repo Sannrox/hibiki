@@ -14,7 +14,7 @@ import grpc
 from hibiki.boundaries import ProcessRunner
 from hibiki.contracts import sekai_pb2
 from hibiki.publication import _authored_snowflake_window
-from hibiki.records import CausalRepositories, PublicationRecord
+from hibiki.records import CausalRepositories, OutcomeRecord, PublicationRecord
 from hibiki.sekai import SekaiGateway
 
 PRODUCER_IDENTITY = "hibiki:birdclaw"
@@ -199,12 +199,14 @@ def collect_publication_evidence(
     snapshot_deduplicated = snapshot is not None
     pending: list[sekai_pb2.EvidenceEnvelope] = []
     snapshot_envelope: sekai_pb2.EvidenceEnvelope | None = None
+    snapshot_metrics: dict[str, int] | None = None
     if snapshot is None:
         post = _collect_post(process_runner, publication)
+        snapshot_metrics = _metrics(post.get("public_metrics"), require_all=True)
         content = {
             "post_id": publication.post_id,
             "window": window,
-            "metrics": _metrics(post.get("public_metrics"), require_all=True),
+            "metrics": snapshot_metrics,
         }
         snapshot_envelope = _build_envelope(
             publication,
@@ -270,13 +272,26 @@ def collect_publication_evidence(
 
     submitted_by_type: dict[str, list[sekai_pb2.EvidenceSubmissionRecord]] = {}
     for envelope in pending:
+        if envelope.evidence_type == SNAPSHOT_TYPE:
+            if snapshot_metrics is None:
+                raise EvidenceWorkflowError(
+                    "collected snapshot metrics were lost before persistence"
+                )
+            repositories.outcomes.put(
+                OutcomeRecord(
+                    stable_id=f"{publication.stable_id}:{window}",
+                    publication_external_id=publication.external_id,
+                    window=window,
+                    observed_at=envelope.observed_at_ms,
+                    metrics=snapshot_metrics,
+                    qualified_replies=0,
+                )
+            )
         submitted = _submit(sekai, envelope)
         submitted_by_type.setdefault(envelope.evidence_type, []).append(submitted)
     if snapshot is None:
         snapshot = submitted_by_type[SNAPSHOT_TYPE][0]
-    reply_submission_ids.extend(
-        item.id for item in submitted_by_type.get(REPLY_TYPE, ())
-    )
+    reply_submission_ids.extend(item.id for item in submitted_by_type.get(REPLY_TYPE, ()))
     return CollectionResult(
         publication.external_id,
         publication.post_id,
@@ -292,9 +307,7 @@ def _register_producer(
     gateway: SekaiGateway, capability: sekai_pb2.EvidenceProducerCapability
 ) -> int:
     first_version = capability.config_version
-    for config_version in range(
-        first_version, first_version + MAX_REGISTRATION_VERSION_ATTEMPTS
-    ):
+    for config_version in range(first_version, first_version + MAX_REGISTRATION_VERSION_ATTEMPTS):
         capability.config_version = config_version
         try:
             gateway.register_evidence_producer(capability)
@@ -360,8 +373,10 @@ def _collect_post(
 def _collect_replies(
     process_runner: ProcessRunner, publication: PublicationRecord
 ) -> tuple[tuple[dict[str, object], Mapping[str, dict[str, object]]], ...]:
-    start_time = datetime.fromtimestamp(publication.attempted_at / 1000, UTC).isoformat().replace(
-        "+00:00", "Z"
+    start_time = (
+        datetime.fromtimestamp(publication.attempted_at / 1000, UTC)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
     response = _run_birdclaw(
         process_runner,

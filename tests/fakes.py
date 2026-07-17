@@ -179,6 +179,8 @@ class FakeSekaiGateway:
                 schema_version=envelope.schema_version,
                 content_digest=envelope.content_digest,
                 lifecycle_state="available",
+                observed_at_ms=envelope.observed_at_ms,
+                collected_at_ms=envelope.collected_at_ms,
             ),
             admitted=True,
             projected=True,

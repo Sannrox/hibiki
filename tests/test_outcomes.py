@@ -14,7 +14,7 @@ from hibiki.outcomes import (
     classify_replies,
     confirm_classification,
 )
-from hibiki.records import CausalRepositories, ProposalRecord, PublicationRecord
+from hibiki.records import CausalRepositories, OutcomeRecord, ProposalRecord, PublicationRecord
 from tests.fakes import FakeChiseiGateway, FakeSekaiGateway
 
 
@@ -98,6 +98,27 @@ def classification_payload(count: int, category: str = "potential_user") -> str:
                 for index in range(count)
             ]
         }
+    )
+
+
+def add_raw_outcome(
+    sekai: FakeSekaiGateway,
+    publication: PublicationRecord,
+    window: str,
+    *,
+    observed_at: int = 604_800_000,
+    metrics: dict[str, int] | None = None,
+) -> None:
+    CausalRepositories.create(sekai, publication.namespace).outcomes.put(
+        OutcomeRecord(
+            stable_id=f"{publication.stable_id}:{window}",
+            publication_external_id=publication.external_id,
+            window=window,
+            observed_at=observed_at,
+            metrics=metrics
+            or {"impressions": 100, "likes": 1, "replies": 1, "reposts": 0, "quotes": 0},
+            qualified_replies=0,
+        )
     )
 
 
@@ -327,6 +348,18 @@ def test_final_report_counts_confirmed_qualified_replies_and_exposes_lineage() -
         source_record_id=publication.post_id,
         source_version="7d:complete-v2",
     )
+    add_raw_outcome(
+        sekai,
+        publication,
+        "7d",
+        metrics={
+            "impressions": 1200,
+            "likes": 20,
+            "replies": 1,
+            "reposts": 3,
+            "quotes": 2,
+        },
+    )
     chisei = FakeChiseiGateway(
         (
             classification_payload(1),
@@ -371,6 +404,7 @@ def test_report_rejects_unconfirmed_reply_and_invalid_category() -> None:
         source_record_id=publication.post_id,
         source_version="24h:complete-v2",
     )
+    add_raw_outcome(sekai, publication, "24h")
     chisei = FakeChiseiGateway(classification_payload(1))
 
     with pytest.raises(OutcomeWorkflowError, match="must be confirmed"):
@@ -390,6 +424,12 @@ def test_preliminary_report_excludes_replies_after_its_fixed_window() -> None:
         submission_id="snapshot-24h",
         source_record_id=publication.post_id,
         source_version="24h:complete-v2",
+        observed_at=publication.attempted_at + 86_400_000,
+    )
+    add_raw_outcome(
+        sekai,
+        publication,
+        "24h",
         observed_at=publication.attempted_at + 86_400_000,
     )
     chisei = FakeChiseiGateway(
@@ -445,6 +485,10 @@ def test_report_validates_lineage_before_persisting_an_outcome() -> None:
         source_record_id=publication.post_id,
         source_version="7d:complete-v2",
     )
+    add_raw_outcome(sekai, publication, "7d")
+    raw_outcome = next(item for item in sekai.objects.values() if item.kind == "hibiki.outcome")
+    raw_outcome_id = raw_outcome.id
+    raw_outcome_hash = raw_outcome.properties["content_hash"]
     proposal_id = next(
         object_id for object_id, item in sekai.objects.items() if item.kind == "hibiki.proposal"
     )
@@ -455,7 +499,9 @@ def test_report_validates_lineage_before_persisting_an_outcome() -> None:
             sekai, FakeChiseiGateway("{}"), publication.external_id, "7d", "hibiki"
         )
 
-    assert all(item.kind != "hibiki.outcome" for item in sekai.objects.values())
+    stored_outcome = sekai.objects[raw_outcome_id]
+    assert stored_outcome.properties["content_hash"] == raw_outcome_hash
+    assert stored_outcome.properties["qualified_replies"] == "0"
 
 
 def test_classification_rejects_malformed_operation_receipt() -> None:
