@@ -30,3 +30,12 @@ def test_generated_bindings_are_reproducible() -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "generated bindings are current\n"
+
+
+def test_list_objects_request_uses_list_filter() -> None:
+    request = sekai_pb2.ListObjectsRequest(
+        filter=sekai_pb2.ListFilter(kind="hibiki.outcome", namespace="hibiki", limit=100)
+    )
+    assert request.filter.kind == "hibiki.outcome"
+    assert request.filter.namespace == "hibiki"
+    assert request.filter.limit == 100

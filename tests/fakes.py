@@ -212,3 +212,13 @@ class FakeSekaiGateway:
                 stored.CopyFrom(result.submission)
                 return stored
         raise KeyError(submission_id)
+
+    def list_objects_by_kind(
+        self, *, kind: str, namespace: str, limit: int
+    ) -> tuple[sekai_pb2.Object, ...]:
+        matches = [
+            obj
+            for obj in self.objects.values()
+            if obj.kind == kind and obj.namespace == namespace
+        ]
+        return tuple(matches[:limit])

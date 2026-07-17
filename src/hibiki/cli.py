@@ -24,6 +24,12 @@ from hibiki.evidence import (
     register_evidence_contracts,
 )
 from hibiki.health import Check, run_health_checks, serialize_checks
+from hibiki.learning import (
+    LearningWorkflowError,
+    evaluate_strategy,
+    surface_hypotheses,
+    update_hypothesis_status,
+)
 from hibiki.outcomes import (
     OutcomeWorkflowError,
     ReplyClassification,
@@ -49,7 +55,9 @@ USAGE = (
     "usage: hibiki <health|config|schema|recommend|draft SOURCE_ID|"
     "validate PROPOSAL_ID|approve PROPOSAL_ID|publish PROPOSAL_ID|"
     "collect PUBLICATION_ID 24h|7d|classify PUBLICATION_ID|"
-    "confirm REPLY_SUBMISSION_ID CATEGORY|outcome PUBLICATION_ID 24h|7d> "
+    "confirm REPLY_SUBMISSION_ID CATEGORY|outcome PUBLICATION_ID 24h|7d|"
+    "hypothesize PUBLICATION_ID|strategy|"
+    "hypothesis-status HYPOTHESIS_ID STATUS> "
     "[--timeout SECONDS]"
 )
 
@@ -89,9 +97,12 @@ def run(
         "classify",
         "confirm",
         "outcome",
+        "hypothesize",
+        "strategy",
+        "hypothesis-status",
     }:
         return _usage_error(stdout, stderr, f"unknown command: {command}")
-    if command in {"config", "schema", "recommend"} and len(argv) != 1:
+    if command in {"config", "schema", "recommend", "strategy"} and len(argv) != 1:
         return _usage_error(stdout, stderr, f"{command} does not accept arguments")
     if command == "draft" and len(argv) != 2:
         return _usage_error(stdout, stderr, "draft requires SOURCE_ID")
@@ -105,6 +116,14 @@ def run(
         return _usage_error(stdout, stderr, "confirm requires REPLY_SUBMISSION_ID and CATEGORY")
     if command == "outcome" and (len(argv) != 3 or argv[2] not in {"24h", "7d"}):
         return _usage_error(stdout, stderr, "outcome requires PUBLICATION_ID and 24h or 7d")
+    if command == "hypothesize" and len(argv) != 2:
+        return _usage_error(stdout, stderr, "hypothesize requires PUBLICATION_ID")
+    if command == "hypothesis-status" and (
+        len(argv) != 3 or argv[2] not in {"accepted", "rejected", "retired"}
+    ):
+        return _usage_error(
+            stdout, stderr, "hypothesis-status requires HYPOTHESIS_ID and accepted|rejected|retired"
+        )
 
     try:
         settings = Settings.from_environ(environ)
@@ -260,6 +279,114 @@ def run(
                 "qualified_replies": result.outcome.qualified_replies,
                 "classifications": [_classification_dict(item) for item in result.classifications],
                 "lineage": result.lineage,
+            },
+        )
+        return 0
+
+    if command == "hypothesize":
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        chisei = chisei_gateway or NativeChiseiGateway(settings.chisei_target)
+        try:
+            result = surface_hypotheses(sekai, chisei, argv[1], settings.namespace)
+        except (
+            LearningWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "hypothesis_surfacing_failed", str(error))
+            print(f"hibiki: hypothesis surfacing failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "comparable_posts": result.comparable_posts,
+                "operation_id": result.operation_id,
+                "hypotheses": [
+                    {
+                        "stable_id": item.stable_id,
+                        "statement": item.statement,
+                        "evidence_external_ids": list(item.evidence_external_ids),
+                        "status": item.status,
+                    }
+                    for item in result.hypotheses
+                ],
+            },
+        )
+        return 0
+
+    if command == "strategy":
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        chisei = chisei_gateway or NativeChiseiGateway(settings.chisei_target)
+        try:
+            result = evaluate_strategy(sekai, chisei, settings.namespace)
+        except (
+            LearningWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "strategy_evaluation_failed", str(error))
+            print(f"hibiki: strategy evaluation failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "comparable_posts": result.comparable_posts,
+                "periods": result.periods,
+                "operation_id": result.operation_id,
+                "recommendations": [
+                    {
+                        "hypothesis_external_id": item.hypothesis_external_id,
+                        "statement": item.statement,
+                        "recommendation": item.recommendation,
+                        "confidence_bps": item.confidence_bps,
+                        "posts_evaluated": item.posts_evaluated,
+                        "periods_covered": item.periods_covered,
+                        "actionable": item.actionable,
+                    }
+                    for item in result.recommendations
+                ],
+                "gated_hypotheses": [
+                    {
+                        "hypothesis_external_id": item.hypothesis_external_id,
+                        "statement": item.statement,
+                        "reason": item.reason,
+                        "posts_evaluated": item.posts_evaluated,
+                        "periods_covered": item.periods_covered,
+                    }
+                    for item in result.gated_hypotheses
+                ],
+            },
+        )
+        return 0
+
+    if command == "hypothesis-status":
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        try:
+            result = update_hypothesis_status(sekai, argv[1], argv[2], settings.namespace)
+        except (
+            LearningWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "hypothesis_status_failed", str(error))
+            print(f"hibiki: hypothesis status update failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "hypothesis_external_id": result.hypothesis.external_id,
+                "previous_status": result.previous_status,
+                "new_status": result.new_status,
+                "statement": result.hypothesis.statement,
             },
         )
         return 0

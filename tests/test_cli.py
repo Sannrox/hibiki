@@ -470,3 +470,102 @@ def test_publish_reconciliation_emits_structured_error_when_birdclaw_is_missing(
     assert payload["error"]["code"] == "publication_failed"
     assert "could not start" in payload["error"]["message"]
     assert "publication failed" in diagnostics
+
+
+def test_hypothesize_returns_surfaced_hypotheses() -> None:
+    from tests.test_learning import _create_outcomes, _hypothesis_response
+
+    sekai = FakeSekaiGateway()
+    outcomes = _create_outcomes(sekai, 3)
+    chisei = FakeChiseiGateway(_hypothesis_response(outcomes))
+
+    exit_code, payload, diagnostics = invoke(
+        ["hypothesize", outcomes[0].publication_external_id],
+        sekai_gateway=sekai,
+        chisei_gateway=chisei,
+    )
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["comparable_posts"] == 3
+    assert len(payload["hypotheses"]) == 1
+    assert payload["hypotheses"][0]["status"] == "surfaced"
+    assert diagnostics == ""
+
+
+def test_hypothesize_fails_with_insufficient_posts() -> None:
+    sekai = FakeSekaiGateway()
+    chisei = FakeChiseiGateway("{}")
+
+    exit_code, payload, _ = invoke(
+        ["hypothesize", "hibiki.publication:hibiki:nonexistent"],
+        sekai_gateway=sekai,
+        chisei_gateway=chisei,
+    )
+
+    assert exit_code == 1
+    assert payload["error"]["code"] == "hypothesis_surfacing_failed"
+
+
+def test_strategy_returns_gated_hypotheses() -> None:
+    from hibiki.records import CausalRepositories, HypothesisRecord
+    from tests.test_learning import _create_outcomes
+
+    sekai = FakeSekaiGateway()
+    outcomes = _create_outcomes(sekai, 3)
+    repos = CausalRepositories.create(sekai, "hibiki", clock_ms=lambda: 200)
+    repos.hypotheses.put(
+        HypothesisRecord(
+            stable_id="h1",
+            statement="Technical posts work",
+            evidence_external_ids=tuple(o.external_id for o in outcomes),
+        )
+    )
+    chisei = FakeChiseiGateway("{}")
+
+    exit_code, payload, diagnostics = invoke(
+        ["strategy"],
+        sekai_gateway=sekai,
+        chisei_gateway=chisei,
+    )
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["comparable_posts"] == 3
+    assert len(payload["gated_hypotheses"]) == 1
+    assert len(payload["recommendations"]) == 0
+    assert diagnostics == ""
+
+
+def test_hypothesis_status_updates_record() -> None:
+    from hibiki.records import CausalRepositories, HypothesisRecord
+
+    sekai = FakeSekaiGateway()
+    repos = CausalRepositories.create(sekai, "hibiki", clock_ms=lambda: 100)
+    repos.hypotheses.put(
+        HypothesisRecord(
+            stable_id="h1",
+            statement="A hypothesis",
+            evidence_external_ids=("hibiki.outcome:hibiki:pub-1:7d",),
+        )
+    )
+
+    exit_code, payload, diagnostics = invoke(
+        ["hypothesis-status", "hibiki.hypothesis:hibiki:h1", "accepted"],
+        sekai_gateway=sekai,
+    )
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["previous_status"] == "surfaced"
+    assert payload["new_status"] == "accepted"
+    assert diagnostics == ""
+
+
+def test_hypothesis_status_rejects_invalid_status_value() -> None:
+    exit_code, payload, _ = invoke(
+        ["hypothesis-status", "hibiki.hypothesis:hibiki:h1", "invalid"],
+    )
+
+    assert exit_code == 2
+    assert payload["error"]["code"] == "usage"

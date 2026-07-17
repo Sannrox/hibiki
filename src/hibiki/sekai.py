@@ -48,6 +48,10 @@ class SekaiGateway(Protocol):
 
     def get_evidence_submission(self, submission_id: str) -> sekai_pb2.EvidenceSubmissionRecord: ...
 
+    def list_objects_by_kind(
+        self, *, kind: str, namespace: str, limit: int
+    ) -> tuple[sekai_pb2.Object, ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class NativeSekaiGateway:
@@ -185,3 +189,16 @@ class NativeSekaiGateway:
                 metadata=self._metadata,
             )
         return response.submission
+
+    def list_objects_by_kind(
+        self, *, kind: str, namespace: str, limit: int
+    ) -> tuple[sekai_pb2.Object, ...]:
+        with grpc.insecure_channel(self.target) as channel:
+            response = sekai_pb2_grpc.SekaiServiceStub(channel).ListObjects(
+                sekai_pb2.ListObjectsRequest(
+                    filter=sekai_pb2.ListFilter(kind=kind, namespace=namespace, limit=limit)
+                ),
+                timeout=self.timeout,
+                metadata=self._metadata,
+            )
+        return tuple(response.objects)
