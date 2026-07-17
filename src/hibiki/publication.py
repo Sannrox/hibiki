@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 import warnings
@@ -17,6 +18,9 @@ BIRDCLAW_TIMEOUT_SECONDS = 30.0
 AUTHORED_LOOKBACK = timedelta(minutes=5)
 X_SNOWFLAKE_EPOCH_MS = 1_288_834_974_657
 MAX_SAFE_X_TEXT_WEIGHT = 280
+X_SHORT_URL_WEIGHT = 23
+PROTOCOL_URL_PATTERN = re.compile(r"https?://[^\s<>\"'\x80-\uffff]+", re.IGNORECASE)
+TRAILING_URL_PUNCTUATION = ".,!?;:)]}"
 
 
 class PublicationWorkflowError(RuntimeError):
@@ -257,7 +261,14 @@ def _safe_x_text_weight(text: str) -> int:
         )
         from twitter_text import parse_tweet
 
-    return int(parse_tweet(text).weightedLength)
+    weight = int(parse_tweet(text).weightedLength)
+    for match in PROTOCOL_URL_PATTERN.finditer(text):
+        candidate = match.group().rstrip(TRAILING_URL_PUNCTUATION)
+        if not candidate:
+            continue
+        literal_weight = int(parse_tweet(candidate).weightedLength)
+        weight += max(0, X_SHORT_URL_WEIGHT - literal_weight)
+    return weight
 
 
 def _run_json_object(

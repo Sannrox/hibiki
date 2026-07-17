@@ -7,4 +7,4 @@
 The package imports `pkg_resources`, which is available only when a compatible Setuptools release is installed.
 
 ## Rule
-Pin `setuptools>=80,<81` with `twitter-text-parser==3.0.0` and suppress only its known deprecation warning.
+Pin `setuptools>=80,<81` with `twitter-text-parser==3.0.0` and suppress only its known deprecation warning. Treat the parser's bundled TLD list as stale: conservatively apply X's fixed URL weight to any explicit HTTP(S) URL that it still counts literally.

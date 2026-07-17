@@ -284,6 +284,22 @@ def test_non_url_suffix_is_not_hidden_by_x_url_weighting() -> None:
     assert runner.calls == []
 
 
+def test_current_tld_url_is_not_undercounted_by_stale_parser_data() -> None:
+    sekai = FakeSekaiGateway()
+    proposal = _approved_edited_proposal(
+        sekai,
+        _approved_proposal(sekai),
+        f"{'a' * 257} https://nic.music",
+    )
+    runner = BirdClawRunner([])
+
+    with pytest.raises(PublicationWorkflowError, match="safe 280-character"):
+        _publish(runner, sekai, proposal)
+
+    assert CausalRepositories.create(sekai, "hibiki").publications.get(proposal.stable_id) is None
+    assert runner.calls == []
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)
