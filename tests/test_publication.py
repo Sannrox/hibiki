@@ -312,6 +312,16 @@ def test_idn_with_current_tld_is_not_undercounted() -> None:
     assert _safe_x_text_weight(f"{'a' * 257} https://例.music") == 281
 
 
+def test_idn_url_does_not_absorb_adjacent_ascii_punctuation() -> None:
+    assert _safe_x_text_weight(f"{'a' * 256} https://例.music(") == 281
+
+
+def test_url_fallback_does_not_rescan_overlapping_protocols() -> None:
+    text = "https://" * 10_000
+
+    assert _safe_x_text_weight(text) >= 280
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)
