@@ -344,6 +344,18 @@ def test_protocol_inside_recognized_url_is_not_counted_twice() -> None:
     assert _safe_x_text_weight(text) == 48
 
 
+def test_protocol_inside_fallback_url_path_is_not_counted_twice() -> None:
+    text = f"{'a' * 240} https://a.music/https://b.music"
+
+    assert _safe_x_text_weight(text) == 272
+
+
+def test_protocol_inside_fallback_url_query_is_not_counted_twice() -> None:
+    text = f"{'a' * 240} https://a.music/?url=https://b.music"
+
+    assert _safe_x_text_weight(text) == 277
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)

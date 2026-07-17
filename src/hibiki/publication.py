@@ -267,13 +267,23 @@ def _safe_x_text_weight(text: str) -> int:
     linkable_characters = [
         character if _is_linkable_character(character) else " " for character in text
     ]
+    linkifier = LinkifyIt()
+    linkified_urls = _linkified_url_mask(
+        text,
+        linkifier.match("".join(linkable_characters)) or [],
+    )
     recognized_ranges = [tuple(item["indices"]) for item in extract_urls_with_indices(text)]
     recognized_urls = _recognized_url_mask(text, recognized_ranges)
     for protocol in PROTOCOL_PATTERN.finditer(text):
-        if _needs_x_specific_boundary(text, protocol.start(), recognized_urls):
+        if _needs_x_specific_boundary(
+            text,
+            protocol.start(),
+            recognized_urls,
+            linkified_urls,
+        ):
             linkable_characters[protocol.start() - 1] = " "
     linkable_text = "".join(linkable_characters)
-    for match in LinkifyIt().match(linkable_text) or []:
+    for match in linkifier.match(linkable_text) or []:
         if match.schema not in {"http:", "https:"}:
             continue
         candidate = match.raw
@@ -292,10 +302,13 @@ def _needs_x_specific_boundary(
     text: str,
     start: int,
     recognized_urls: bytearray,
+    linkified_urls: bytearray,
 ) -> bool:
     if start == 0 or recognized_urls[start]:
         return False
     preceding = text[start - 1]
+    if linkified_urls[start] and preceding.isascii():
+        return False
     if preceding.isascii():
         return not preceding.isalnum() and preceding not in "@$#"
     return unicodedata.category(preceding)[0] in {"L", "M", "N"}
@@ -309,6 +322,16 @@ def _recognized_url_mask(
     for lower, upper in recognized_ranges:
         recognized[lower:upper] = b"\1" * (upper - lower)
     return recognized
+
+
+def _linkified_url_mask(text: str, matches: list[object]) -> bytearray:
+    linkified = bytearray(len(text))
+    for match in matches:
+        if match.schema in {"http:", "https:"}:
+            linkified[match.index : match.last_index] = b"\1" * (
+                match.last_index - match.index
+            )
+    return linkified
 
 
 def _run_json_object(
