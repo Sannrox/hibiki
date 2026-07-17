@@ -12,10 +12,15 @@ from tests.test_discovery import fixture_runner
 FINAL_TEXT = "I made retries deterministic by giving each attempt a stable identity."
 
 
-def validation_response(*, supported: bool = True, claim: str = FINAL_TEXT) -> str:
+def validation_response(
+    *,
+    supported: bool = True,
+    claim: str = FINAL_TEXT,
+    undeclared_claims: tuple[str, ...] = (),
+) -> str:
     return json.dumps(
         {
-            "valid": supported,
+            "valid": supported and not undeclared_claims,
             "reasoning": "The changed retry implementation supports the claim.",
             "claims": [
                 {
@@ -27,6 +32,7 @@ def validation_response(*, supported: bool = True, claim: str = FINAL_TEXT) -> s
                     ),
                 }
             ],
+            "undeclared_claims": list(undeclared_claims),
         }
     )
 
@@ -67,3 +73,16 @@ def test_claim_validation_rejects_omitted_expected_claim() -> None:
             discover_public_revision(fixture_runner(), "example/tenkai", "abc123"),
             expected_claims=(FINAL_TEXT, "It also guarantees zero failures."),
         )
+
+
+def test_claim_validation_fails_closed_on_undeclared_factual_claim() -> None:
+    extra_claim = "It also guarantees zero failures."
+    result = validate_claims(
+        FakeChiseiGateway(validation_response(undeclared_claims=(extra_claim,))),
+        FINAL_TEXT + " " + extra_claim,
+        discover_public_revision(fixture_runner(), "example/tenkai", "abc123"),
+        expected_claims=(FINAL_TEXT,),
+    )
+
+    assert result.valid is False
+    assert result.undeclared_claims == (extra_claim,)

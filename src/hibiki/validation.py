@@ -28,6 +28,7 @@ class ValidationResult:
     valid: bool
     reasoning: str
     claims: tuple[ValidatedClaim, ...]
+    undeclared_claims: tuple[str, ...]
     operation_id: str
     request_id: str
     provider: str
@@ -89,7 +90,7 @@ def validate_claims(
         raise ClaimValidationError(f"Chisei rejected validation plan: {reason}")
 
     executed = gateway.execute_plan(plan)
-    valid, reasoning, claims = _parse_validation(
+    valid, reasoning, claims, undeclared_claims = _parse_validation(
         executed.response.content, text, expected_claims, bundle
     )
     receipt = gateway.get_operation_receipt(
@@ -100,6 +101,7 @@ def validate_claims(
         valid=valid,
         reasoning=reasoning,
         claims=claims,
+        undeclared_claims=undeclared_claims,
         operation_id=plan.plan_id,
         request_id=request_id,
         provider=executed.response.provider,
@@ -129,10 +131,17 @@ def _validation_spec(text: str, expected_claims: tuple[str, ...], bundle: Eviden
                         ],
                     }
                 ],
+                "undeclared_claims": [
+                    "exact factual claim substring found in final_text but absent from "
+                    "expected_claims"
+                ],
             },
             "requirements": [
+                "independently inventory every factual claim in final_text",
                 "return every expected_claim exactly once with identical text",
+                "return every additional factual claim in undeclared_claims",
                 "mark valid=false when any claim is unsupported",
+                "mark valid=false when undeclared_claims is non-empty",
                 "supported claims require at least one in-bundle evidence reference",
                 "unsupported claims must have no source references",
             ],
@@ -149,12 +158,17 @@ def _parse_validation(
     text: str,
     expected_claims: tuple[str, ...],
     bundle: EvidenceBundle,
-) -> tuple[bool, str, tuple[ValidatedClaim, ...]]:
+) -> tuple[bool, str, tuple[ValidatedClaim, ...], tuple[str, ...]]:
     try:
         payload = json.loads(content)
     except json.JSONDecodeError as error:
         raise ClaimValidationError("Chisei validation response is not valid JSON") from error
-    if not isinstance(payload, dict) or set(payload) != {"valid", "reasoning", "claims"}:
+    if not isinstance(payload, dict) or set(payload) != {
+        "valid",
+        "reasoning",
+        "claims",
+        "undeclared_claims",
+    }:
         raise ClaimValidationError("Chisei validation response has unexpected or missing fields")
     if type(payload["valid"]) is not bool:
         raise ClaimValidationError("validation verdict must be a boolean")
@@ -211,9 +225,23 @@ def _parse_validation(
     valid = payload["valid"]
     if seen_claims != set(expected_claims) or len(claims) != len(expected_claims):
         raise ClaimValidationError("validation response omitted or added a factual claim")
-    if valid != all(claim.supported for claim in claims):
+    raw_undeclared = payload["undeclared_claims"]
+    if not isinstance(raw_undeclared, list) or any(
+        not isinstance(claim, str) or not claim.strip() or claim not in text
+        for claim in raw_undeclared
+    ):
+        raise ClaimValidationError(
+            "undeclared claims must be non-empty verbatim substrings of final text"
+        )
+    undeclared_claims = tuple(claim.strip() for claim in raw_undeclared)
+    if len(set(undeclared_claims)) != len(undeclared_claims) or set(undeclared_claims).intersection(
+        expected_claims
+    ):
+        raise ClaimValidationError("undeclared claims must be unique and not expected")
+    supported = all(claim.supported for claim in claims) and not undeclared_claims
+    if valid != supported:
         raise ClaimValidationError("validation verdict does not match claim support results")
-    return valid, reasoning, tuple(claims)
+    return valid, reasoning, tuple(claims), undeclared_claims
 
 
 def _validate_receipt(receipt_json: str) -> None:

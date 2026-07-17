@@ -192,6 +192,9 @@ def _validation_evidence(validation: ValidationResult, text_hash: str) -> dict[s
     return {
         "final_text_hash": text_hash,
         "claims": json.dumps(claims, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        "undeclared_claims": json.dumps(
+            list(validation.undeclared_claims), ensure_ascii=False, separators=(",", ":")
+        ),
         "operation_id": validation.operation_id,
         "provider": validation.provider,
         "model": validation.model,
