@@ -45,15 +45,19 @@ def test_draft_source_persists_proposal_and_governed_lineage() -> None:
 
     assert drafted.proposal.source_external_id == source.external_id
     assert repositories.proposals.get(source.stable_id) == drafted.proposal
-    decision = sekai.decisions[drafted.proposal.decision_ref]
-    assert decision.action == "hibiki.proposal_draft"
-    assert decision.evidence["draft_hash"] == drafted.proposal.draft_hash
+    draft_decision = next(
+        decision
+        for decision in sekai.decisions.values()
+        if decision.action == "hibiki.proposal_draft"
+    )
+    assert draft_decision.evidence["draft_hash"] == drafted.proposal.draft_hash
     validation = next(
         decision
         for decision in sekai.decisions.values()
         if decision.action == "hibiki.claim_validation"
     )
     assert validation.outcome == "supported"
+    assert drafted.proposal.decision_ref == validation.id
 
 
 def test_draft_source_does_not_persist_unsupported_generated_text() -> None:
@@ -239,3 +243,82 @@ def test_approval_rejects_hash_that_does_not_match_validated_text() -> None:
 
     with pytest.raises(ProposalWorkflowError, match="does not match"):
         approve_proposal(sekai, drafted.proposal.external_id, "0" * 64, "hibiki")
+
+
+@pytest.mark.parametrize("status", ["published", "rejected"])
+def test_terminal_proposal_cannot_be_reopened_by_validation(status: str) -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    terminal = repositories.proposals.put(drafted.proposal.with_status(status))
+
+    with pytest.raises(ProposalWorkflowError, match="cannot accept edited text"):
+        validate_proposal_edit(
+            fixture_runner(),
+            sekai,
+            FakeChiseiGateway((inventory_response(terminal.draft), validation_response())),
+            terminal.external_id,
+            terminal.draft,
+            "hibiki",
+        )
+
+    assert repositories.proposals.get(terminal.stable_id) == terminal
+
+
+def test_approval_does_not_depend_on_global_decision_window() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    for index in range(101):
+        sekai.record_decision(
+            sekai_pb2.Decision(
+                id=f"newer-validation-{index}",
+                timestamp=1_000 + index,
+                actor="hibiki",
+                action="hibiki.claim_validation",
+                target_id=f"other-{index}",
+                outcome="supported",
+            )
+        )
+
+    approved = approve_proposal(
+        sekai, drafted.proposal.external_id, drafted.proposal.draft_hash, "hibiki"
+    )
+
+    assert approved.validation_decision_id == drafted.proposal.decision_ref
+    assert (
+        require_current_approval(sekai, approved.proposal, approved.proposal.draft)
+        == approved.approval_id
+    )

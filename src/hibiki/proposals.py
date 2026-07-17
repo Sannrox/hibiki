@@ -69,6 +69,13 @@ def draft_source(
     source = repositories.sources.get_external(source_external_id)
     if source is None:
         raise ProposalWorkflowError(f"source not found: {source_external_id}")
+    existing_proposal = repositories.proposals.get(source.stable_id)
+    if existing_proposal is not None and existing_proposal.status in {"published", "rejected"}:
+        raise ProposalWorkflowError(
+            f"proposal in {existing_proposal.status} state cannot be drafted again"
+        )
+    if existing_proposal is not None and existing_proposal.status == "approved":
+        repositories.proposals.put(existing_proposal.with_status("invalidated"))
     bundle = discover_public_revision(
         process_runner,
         source.repository,
@@ -118,9 +125,12 @@ def draft_source(
             outcome="drafted",
         )
     )
+    validation_decision_id = _validation_decision_id(
+        namespace, proposal.external_id, validation.request_id
+    )
     sekai.record_decision(
         sekai_pb2.Decision(
-            id=_validation_decision_id(namespace, proposal.external_id, validation.request_id),
+            id=validation_decision_id,
             timestamp=now_ms,
             actor="hibiki",
             action="hibiki.claim_validation",
@@ -128,6 +138,13 @@ def draft_source(
             evidence=_validation_evidence(validation, proposal.draft_hash),
             target_id=proposal.external_id,
             outcome="supported",
+        )
+    )
+    proposal = repositories.proposals.put(
+        replace(
+            proposal,
+            decision_ref=validation_decision_id,
+            operation_id=validation.operation_id,
         )
     )
     return DraftedProposal(
@@ -159,6 +176,10 @@ def validate_proposal_edit(
         raise ProposalWorkflowError(f"proposal not found: {proposal_external_id}")
     if not final_text.strip():
         raise ProposalWorkflowError("final text must be a non-empty string")
+    if proposal.status not in {"drafted", "approved", "invalidated"}:
+        raise ProposalWorkflowError(
+            f"proposal in {proposal.status} state cannot accept edited text"
+        )
 
     edited = final_text != proposal.draft
     if edited and proposal.status == "approved":
@@ -235,26 +256,10 @@ def approve_proposal(
         raise ProposalWorkflowError("only a validated drafted proposal can be approved")
     if final_text_hash != proposal.draft_hash:
         raise ProposalWorkflowError("approval hash does not match the validated final text")
-    validation = next(
-        (
-            decision
-            for decision in sekai.list_decisions(
-                actor="hibiki", action="hibiki.claim_validation", limit=100
-            )
-            if decision.target_id == proposal.external_id
-            and decision.outcome == "supported"
-            and decision.evidence.get("final_text_hash") == final_text_hash
-        ),
-        None,
-    )
-    if validation is None:
-        raise ProposalWorkflowError("no successful claim validation exists for the final text")
-    approval_id = str(
-        uuid.uuid5(
-            PROPOSAL_DECISION_NAMESPACE,
-            f"{namespace}:approval:{proposal.external_id}:{final_text_hash}",
-        )
-    )
+    if not proposal.decision_ref:
+        raise ProposalWorkflowError("proposal does not reference its successful claim validation")
+    validation_decision_id = proposal.decision_ref
+    approval_id = _approval_id(namespace, proposal.external_id, final_text_hash)
     sekai.record_decision(
         sekai_pb2.Decision(
             id=approval_id,
@@ -264,14 +269,16 @@ def approve_proposal(
             reason="operator approved the exact validated final-text hash",
             evidence={
                 "final_text_hash": final_text_hash,
-                "validation_decision_id": validation.id,
+                "validation_decision_id": validation_decision_id,
             },
             target_id=proposal.external_id,
             outcome="approved",
         )
     )
-    approved = repositories.proposals.put(proposal.with_status("approved"))
-    return ProposalApproval(approved, approval_id, validation.id)
+    approved = repositories.proposals.put(
+        replace(proposal, status="approved", decision_ref=approval_id)
+    )
+    return ProposalApproval(approved, approval_id, validation_decision_id)
 
 
 def require_current_approval(
@@ -281,21 +288,12 @@ def require_current_approval(
 ) -> str:
     if proposal.status != "approved" or sha256_text(final_text) != proposal.draft_hash:
         raise ProposalWorkflowError("proposal approval is stale or absent for the final text")
-    approval = next(
-        (
-            decision
-            for decision in sekai.list_decisions(
-                actor="hibiki", action="hibiki.proposal_approval", limit=100
-            )
-            if decision.target_id == proposal.external_id
-            and decision.outcome == "approved"
-            and decision.evidence.get("final_text_hash") == proposal.draft_hash
-        ),
-        None,
+    expected_approval_id = _approval_id(
+        proposal.namespace, proposal.external_id, proposal.draft_hash
     )
-    if approval is None:
+    if proposal.decision_ref != expected_approval_id:
         raise ProposalWorkflowError("proposal approval is stale or absent for the final text")
-    return approval.id
+    return proposal.decision_ref
 
 
 def _draft_evidence(drafted: DraftResult, evidence_hash: str) -> dict[str, str]:
@@ -349,6 +347,15 @@ def _validation_decision_id(namespace: str, target_id: str, request_id: str) -> 
         uuid.uuid5(
             PROPOSAL_DECISION_NAMESPACE,
             f"{namespace}:validation:{target_id}:{request_id}",
+        )
+    )
+
+
+def _approval_id(namespace: str, proposal_external_id: str, final_text_hash: str) -> str:
+    return str(
+        uuid.uuid5(
+            PROPOSAL_DECISION_NAMESPACE,
+            f"{namespace}:approval:{proposal_external_id}:{final_text_hash}",
         )
     )
 
