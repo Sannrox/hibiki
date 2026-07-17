@@ -16,15 +16,28 @@ class ProcessResult:
 
 
 class ProcessRunner(Protocol):
-    def run(self, argv: tuple[str, ...], timeout: float) -> ProcessResult: ...
+    def run(
+        self,
+        argv: tuple[str, ...],
+        timeout: float,
+        *,
+        input_text: str | None = None,
+    ) -> ProcessResult: ...
 
 
 class SubprocessRunner:
-    def run(self, argv: tuple[str, ...], timeout: float) -> ProcessResult:
+    def run(
+        self,
+        argv: tuple[str, ...],
+        timeout: float,
+        *,
+        input_text: str | None = None,
+    ) -> ProcessResult:
         completed = subprocess.run(
             argv,
             capture_output=True,
             check=False,
+            input=input_text,
             text=True,
             timeout=timeout,
         )

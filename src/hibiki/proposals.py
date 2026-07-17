@@ -74,7 +74,7 @@ def draft_source(
     clock_ms: Callable[[], int] | None = None,
 ) -> DraftedProposal:
     proposal_external_id = _proposal_external_id_for_source(source_external_id, namespace)
-    with _proposal_lock(proposal_external_id):
+    with proposal_lock(proposal_external_id):
         return _draft_source_locked(
             process_runner,
             sekai,
@@ -192,7 +192,7 @@ def validate_proposal_edit(
     limits: DiscoveryLimits | None = None,
     clock_ms: Callable[[], int] | None = None,
 ) -> EditedProposalValidation:
-    with _proposal_lock(proposal_external_id):
+    with proposal_lock(proposal_external_id):
         return _validate_proposal_edit_locked(
             process_runner,
             sekai,
@@ -292,7 +292,7 @@ def approve_proposal(
     *,
     clock_ms: Callable[[], int] | None = None,
 ) -> ProposalApproval:
-    with _proposal_lock(proposal_external_id):
+    with proposal_lock(proposal_external_id):
         return _approve_proposal_locked(
             sekai,
             proposal_external_id,
@@ -434,7 +434,7 @@ def _proposal_external_id_for_source(source_external_id: str, namespace: str) ->
 
 
 @contextmanager
-def _proposal_lock(proposal_external_id: str) -> Iterator[None]:
+def proposal_lock(proposal_external_id: str) -> Iterator[None]:
     lock_name = f"hibiki-proposal-{sha256_text(proposal_external_id)}.lock"
     lock_path = os.path.join(tempfile.gettempdir(), lock_name)
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
