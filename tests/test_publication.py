@@ -386,6 +386,12 @@ def test_balanced_group_after_path_atom_is_not_counted_twice() -> None:
     assert _safe_x_text_weight(text) == 280
 
 
+def test_invalid_balanced_path_prefix_is_rejected_without_backtracking() -> None:
+    text = f"https://a.music/{'a' * 64},(https://b.music)"
+
+    assert _safe_x_text_weight(text) > 23
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)
