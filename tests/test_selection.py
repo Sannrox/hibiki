@@ -92,3 +92,10 @@ def test_candidate_must_reference_evidence_bundle() -> None:
         select_candidate(gateway, bundle(), ())
 
     assert gateway.receipt_requests == []
+
+
+def test_no_candidate_requires_explicit_null_candidate_field() -> None:
+    gateway = FakeChiseiGateway(json.dumps({"reason": "Nothing eligible."}))
+
+    with pytest.raises(SelectionError, match="missing candidate"):
+        select_candidate(gateway, bundle(), ())

@@ -56,12 +56,16 @@ def recommend_source(
     selection_decisions = sekai.list_decisions(
         actor="hibiki", action="hibiki.source_selection", limit=100
     )
-    recent_topics = tuple(
-        decision.evidence["topic"]
-        for decision in sorted(selection_decisions, key=lambda decision: decision.timestamp)[-10:]
+    topic_decisions = [
+        decision
+        for decision in selection_decisions
         if decision.target_id == repository
         and decision.outcome == "selected"
         and decision.evidence.get("topic")
+    ]
+    recent_topics = tuple(
+        decision.evidence["topic"]
+        for decision in sorted(topic_decisions, key=lambda decision: decision.timestamp)[-10:]
     )
 
     bundle = discover_public_sources(

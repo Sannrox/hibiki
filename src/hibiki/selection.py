@@ -150,6 +150,8 @@ def _parse_response(
         raise SelectionError("Chisei selection response is not valid JSON") from error
     if not isinstance(payload, dict) or set(payload) - {"candidate", "reason"}:
         raise SelectionError("Chisei selection response has unexpected fields")
+    if "candidate" not in payload:
+        raise SelectionError("Chisei selection response is missing candidate")
     raw_candidate = payload.get("candidate")
     if raw_candidate is None:
         reason = _nonempty_string(payload.get("reason"), "no-candidate reason")
