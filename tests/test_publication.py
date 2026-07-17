@@ -252,6 +252,22 @@ def test_long_form_text_is_rejected_before_intent_or_birdclaw_call() -> None:
     assert runner.calls == []
 
 
+def test_x_url_weight_is_applied_before_intent_or_birdclaw_call() -> None:
+    sekai = FakeSekaiGateway()
+    proposal = _approved_edited_proposal(
+        sekai,
+        _approved_proposal(sekai),
+        f"{'a' * 266} https://x.com",
+    )
+    runner = BirdClawRunner([])
+
+    with pytest.raises(PublicationWorkflowError, match="safe 280-character"):
+        _publish(runner, sekai, proposal)
+
+    assert CausalRepositories.create(sekai, "hibiki").publications.get(proposal.stable_id) is None
+    assert runner.calls == []
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
@@ -16,6 +18,10 @@ BIRDCLAW_TIMEOUT_SECONDS = 30.0
 AUTHORED_LOOKBACK = timedelta(minutes=5)
 X_SNOWFLAKE_EPOCH_MS = 1_288_834_974_657
 MAX_SAFE_X_TEXT_WEIGHT = 280
+X_URL_PATTERN = re.compile(
+    r"(?i)(?:https?://|www\.|[a-z0-9-]+\.[a-z]{2,})(?:[^\s]*)"
+)
+URL_TRAILING_PUNCTUATION = frozenset(".,!?;:'\" )]}>".replace(" ", ""))
 
 
 class PublicationWorkflowError(RuntimeError):
@@ -248,6 +254,22 @@ def _canonical_post_text(post: dict[object, object]) -> str:
 
 
 def _safe_x_text_weight(text: str) -> int:
+    normalized = unicodedata.normalize("NFC", text)
+    weight = 0
+    position = 0
+    for match in X_URL_PATTERN.finditer(normalized):
+        weight += _conservative_codepoint_weight(normalized[position : match.start()])
+        url = match.group()
+        trailing_weight = 0
+        while url and url[-1] in URL_TRAILING_PUNCTUATION:
+            trailing_weight += _conservative_codepoint_weight(url[-1])
+            url = url[:-1]
+        weight += (23 if url else 0) + trailing_weight
+        position = match.end()
+    return weight + _conservative_codepoint_weight(normalized[position:])
+
+
+def _conservative_codepoint_weight(text: str) -> int:
     return sum(1 if ord(character) <= 0x7F else 2 for character in text)
 
 
