@@ -173,9 +173,6 @@ def validate_proposal_edit(
         )
 
     edited = final_text != proposal.draft
-    if edited and proposal.status == "approved":
-        proposal = repositories.proposals.put(proposal.with_status("invalidated"))
-
     source = repositories.sources.get_external(proposal.source_external_id)
     if source is None:
         raise ProposalWorkflowError(f"source not found: {proposal.source_external_id}")

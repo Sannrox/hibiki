@@ -41,6 +41,21 @@ def inventory_response(*claims: str) -> str:
     return json.dumps({"claims": list(claims or (FINAL_TEXT,))})
 
 
+def empty_inventory_response() -> str:
+    return json.dumps({"claims": []})
+
+
+def empty_validation_response() -> str:
+    return json.dumps(
+        {
+            "valid": True,
+            "reasoning": "The text contains no factual claims.",
+            "claims": [],
+            "undeclared_claims": [],
+        }
+    )
+
+
 def test_claim_validation_returns_strict_supported_verdict() -> None:
     bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
 
@@ -64,6 +79,23 @@ def test_claim_inventory_returns_verbatim_unique_claims() -> None:
     )
 
     assert result.claims == (FINAL_TEXT,)
+
+
+def test_claim_free_text_validates_with_empty_inventory() -> None:
+    text = "I like this direction."
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+
+    inventory = inventory_claims(FakeChiseiGateway(empty_inventory_response()), text, bundle)
+    result = validate_claims(
+        FakeChiseiGateway(empty_validation_response()),
+        text,
+        bundle,
+        expected_claims=inventory.claims,
+    )
+
+    assert inventory.claims == ()
+    assert result.valid is True
+    assert result.claims == ()
 
 
 def test_claim_validation_rejects_claim_absent_from_final_text() -> None:

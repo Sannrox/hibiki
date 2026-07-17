@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from hibiki.contracts import sekai_pb2
-from hibiki.discovery import discover_public_revision
+from hibiki.discovery import DiscoveryError, discover_public_revision
 from hibiki.proposals import (
     ProposalWorkflowError,
     approve_proposal,
@@ -354,6 +354,43 @@ def test_failed_redraft_preserves_existing_approval() -> None:
             sekai,
             FakeChiseiGateway((draft_response(), validation_response(supported=False))),
             source.external_id,
+            "hibiki",
+        )
+
+    assert repositories.proposals.get(drafted.proposal.stable_id) == approved.proposal
+
+
+def test_failed_edit_validation_preserves_existing_approval() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    approved = approve_proposal(
+        sekai, drafted.proposal.external_id, drafted.proposal.draft_hash, "hibiki"
+    )
+
+    with pytest.raises(DiscoveryError, match="not confirmed public"):
+        validate_proposal_edit(
+            fixture_runner(visibility="private"),
+            sekai,
+            FakeChiseiGateway((inventory_response(), validation_response())),
+            approved.proposal.external_id,
+            approved.proposal.draft + " Edited.",
             "hibiki",
         )
 

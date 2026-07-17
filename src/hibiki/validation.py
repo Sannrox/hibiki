@@ -136,10 +136,8 @@ def validate_claims(
     invalid_expected_claim = any(
         not claim.strip() or claim not in text for claim in expected_claims
     )
-    if not expected_claims or invalid_expected_claim:
-        raise ClaimValidationError(
-            "expected claims must be non-empty verbatim substrings of final text"
-        )
+    if invalid_expected_claim:
+        raise ClaimValidationError("expected claims must be verbatim substrings of final text")
     text_hash = hashlib.sha256(text.encode()).hexdigest()
     request_id = f"hibiki-validation-{text_hash[:24]}-{bundle.content_hash[:12]}"
     plan = gateway.plan_execution(
@@ -257,8 +255,8 @@ def _parse_validation(
         raise ClaimValidationError("validation verdict must be a boolean")
     reasoning = _nonempty_string(payload["reasoning"], "validation reasoning")
     raw_claims = payload["claims"]
-    if not isinstance(raw_claims, list) or not raw_claims:
-        raise ClaimValidationError("validation claims must be a non-empty list")
+    if not isinstance(raw_claims, list):
+        raise ClaimValidationError("validation claims must be a list")
 
     commit = bundle.commits[0]
     revision = commit["revision"]
@@ -346,8 +344,8 @@ def _parse_inventory(content: str, text: str) -> tuple[str, ...]:
     if not isinstance(payload, dict) or set(payload) != {"claims"}:
         raise ClaimValidationError("Chisei claim inventory has unexpected or missing fields")
     raw_claims = payload["claims"]
-    if not isinstance(raw_claims, list) or not raw_claims:
-        raise ClaimValidationError("Chisei claim inventory must be a non-empty list")
+    if not isinstance(raw_claims, list):
+        raise ClaimValidationError("Chisei claim inventory must be a list")
     claims = tuple(_nonempty_string(claim, "inventoried claim") for claim in raw_claims)
     if any(claim not in text for claim in claims):
         raise ClaimValidationError("inventoried claims must appear verbatim in final text")
