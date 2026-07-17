@@ -334,6 +334,37 @@ def test_classification_rejects_malformed_operation_receipt() -> None:
     assert not sekai.decisions
 
 
+def test_classification_rejects_incomplete_operation_receipt() -> None:
+    sekai, publication = setup_publication()
+    chisei = FakeChiseiGateway(
+        classification_payload(1),
+        receipt_complete=False,
+        missing_surfaces=("evaluation",),
+    )
+
+    with pytest.raises(OutcomeWorkflowError, match="receipt is incomplete"):
+        classify_replies(sekai, chisei, publication.external_id, "hibiki")
+
+    assert not sekai.decisions
+
+
+def test_report_binds_snapshot_to_the_publication_post() -> None:
+    sekai, publication = setup_publication(0)
+    add_submission(
+        sekai,
+        publication,
+        evidence_type=SNAPSHOT_TYPE,
+        submission_id="snapshot-other-post",
+        source_record_id="another-post",
+        source_version="7d:complete-v2",
+    )
+
+    with pytest.raises(OutcomeWorkflowError, match="complete 7d snapshot"):
+        build_outcome_report(
+            sekai, FakeChiseiGateway("{}"), publication.external_id, "7d", "hibiki"
+        )
+
+
 def test_every_documented_category_is_accepted() -> None:
     assert {
         "potential_user",

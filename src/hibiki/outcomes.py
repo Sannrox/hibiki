@@ -185,6 +185,7 @@ def build_outcome_report(
         item
         for item in _submissions(sekai, publication.external_id, SNAPSHOT_TYPE)
         if item.source_version == f"{window}:complete-v2"
+        and item.source_record_id == publication.post_id
     )
     if len(snapshots) != 1:
         raise OutcomeWorkflowError(f"exactly one complete {window} snapshot is required")
@@ -381,6 +382,8 @@ def _execute(
     if not receipt.receipt_json:
         raise OutcomeWorkflowError("Chisei returned no operation receipt")
     _json_object(receipt.receipt_json, "operation receipt")
+    if not receipt.complete or receipt.missing_surfaces:
+        raise OutcomeWorkflowError("Chisei operation receipt is incomplete")
     return executed.response.content, plan.plan_id
 
 
