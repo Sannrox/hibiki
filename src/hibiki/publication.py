@@ -262,6 +262,10 @@ def _safe_x_text_weight(text: str) -> int:
             category=UserWarning,
         )
         from twitter_text import extract_urls_with_indices, parse_tweet
+        from twitter_text.regexp.valid_general_url_path_chars import (
+            valid_general_url_path_chars,
+        )
+        from twitter_text.regexp.valid_url_query_chars import valid_url_query_chars
 
     weight = int(parse_tweet(text).weightedLength)
     linkable_characters = [
@@ -279,7 +283,11 @@ def _safe_x_text_weight(text: str) -> int:
             text,
             protocol.start(),
             recognized_urls,
-            linkified_urls,
+            linkified_urls[protocol.start()]
+            and (
+                valid_general_url_path_chars.fullmatch(text[protocol.start() - 1])
+                or valid_url_query_chars.fullmatch(text[protocol.start() - 1])
+            ),
         ):
             linkable_characters[protocol.start() - 1] = " "
     linkable_text = "".join(linkable_characters)
@@ -302,12 +310,12 @@ def _needs_x_specific_boundary(
     text: str,
     start: int,
     recognized_urls: bytearray,
-    linkified_urls: bytearray,
+    inside_linkified_x_url: bool,
 ) -> bool:
     if start == 0 or recognized_urls[start]:
         return False
     preceding = text[start - 1]
-    if linkified_urls[start] and preceding.isascii():
+    if inside_linkified_x_url:
         return False
     if preceding.isascii():
         return not preceding.isalnum() and preceding not in "@$#"
