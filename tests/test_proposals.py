@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from hibiki.contracts import sekai_pb2
@@ -322,3 +324,67 @@ def test_approval_does_not_depend_on_global_decision_window() -> None:
         require_current_approval(sekai, approved.proposal, approved.proposal.draft)
         == approved.approval_id
     )
+
+
+def test_legacy_approved_proposal_resolves_deterministic_approval_id() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    approved = approve_proposal(
+        sekai, drafted.proposal.external_id, drafted.proposal.draft_hash, "hibiki"
+    )
+    legacy = replace(approved.proposal, decision_ref=approved.validation_decision_id)
+
+    assert require_current_approval(sekai, legacy, legacy.draft) == approved.approval_id
+
+
+def test_failed_redraft_preserves_existing_approval() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    approved = approve_proposal(
+        sekai, drafted.proposal.external_id, drafted.proposal.draft_hash, "hibiki"
+    )
+
+    with pytest.raises(ProposalWorkflowError, match="unsupported factual claim"):
+        draft_source(
+            fixture_runner(),
+            sekai,
+            FakeChiseiGateway((draft_response(), validation_response(supported=False))),
+            source.external_id,
+            "hibiki",
+        )
+
+    assert repositories.proposals.get(drafted.proposal.stable_id) == approved.proposal

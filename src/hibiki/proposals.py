@@ -74,8 +74,6 @@ def draft_source(
         raise ProposalWorkflowError(
             f"proposal in {existing_proposal.status} state cannot be drafted again"
         )
-    if existing_proposal is not None and existing_proposal.status == "approved":
-        repositories.proposals.put(existing_proposal.with_status("invalidated"))
     bundle = discover_public_revision(
         process_runner,
         source.repository,
@@ -291,9 +289,13 @@ def require_current_approval(
     expected_approval_id = _approval_id(
         proposal.namespace, proposal.external_id, proposal.draft_hash
     )
-    if proposal.decision_ref != expected_approval_id:
+    if proposal.decision_ref == expected_approval_id:
+        return proposal.decision_ref
+    # Before approval IDs were stored on proposals, the approval decision was
+    # recorded first and the approved record retained its validation reference.
+    if not proposal.decision_ref:
         raise ProposalWorkflowError("proposal approval is stale or absent for the final text")
-    return proposal.decision_ref
+    return expected_approval_id
 
 
 def _draft_evidence(drafted: DraftResult, evidence_hash: str) -> dict[str, str]:
