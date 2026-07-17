@@ -34,7 +34,12 @@ def validation_response(*, supported: bool = True, claim: str = FINAL_TEXT) -> s
 def test_claim_validation_returns_strict_supported_verdict() -> None:
     bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
 
-    result = validate_claims(FakeChiseiGateway(validation_response()), FINAL_TEXT, bundle)
+    result = validate_claims(
+        FakeChiseiGateway(validation_response()),
+        FINAL_TEXT,
+        bundle,
+        expected_claims=(FINAL_TEXT,),
+    )
 
     assert result.valid is True
     assert result.claims[0].text == FINAL_TEXT
@@ -49,4 +54,16 @@ def test_claim_validation_rejects_claim_absent_from_final_text() -> None:
             FakeChiseiGateway(validation_response(claim="An unrelated assertion.")),
             FINAL_TEXT,
             bundle,
+            expected_claims=(FINAL_TEXT,),
+        )
+
+
+def test_claim_validation_rejects_omitted_expected_claim() -> None:
+    text = FINAL_TEXT + " It also guarantees zero failures."
+    with pytest.raises(ClaimValidationError, match="omitted or added"):
+        validate_claims(
+            FakeChiseiGateway(validation_response()),
+            text,
+            discover_public_revision(fixture_runner(), "example/tenkai", "abc123"),
+            expected_claims=(FINAL_TEXT, "It also guarantees zero failures."),
         )

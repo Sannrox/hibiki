@@ -4,16 +4,16 @@ import json
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from hibiki.boundaries import ProcessRunner
 from hibiki.chisei import ChiseiGateway
 from hibiki.contracts import sekai_pb2
-from hibiki.discovery import DiscoveryLimits, discover_public_revision
+from hibiki.discovery import DiscoveryLimits, EvidenceBundle, discover_public_revision
 from hibiki.drafting import DraftClaim, DraftResult, SourceReference, generate_draft
-from hibiki.records import CausalRepositories, ProposalRecord, sha256_text
+from hibiki.records import CausalRepositories, ProposalRecord, SourceRecord, sha256_text
 from hibiki.sekai import SekaiGateway
-from hibiki.selection import commit_evidence_hash
+from hibiki.selection import commit_evidence_hash, legacy_commit_evidence_hash
 from hibiki.validation import ValidationResult, validate_claims
 
 PROPOSAL_DECISION_NAMESPACE = uuid.UUID("36937fca-08bd-4f67-a62d-56eecdb0d9f5")
@@ -57,10 +57,16 @@ def draft_source(
     )
     evidence_hash = commit_evidence_hash(bundle, source.revision)
     if evidence_hash != source.evidence_hash:
-        raise ProposalWorkflowError("reloaded source evidence does not match the selected source")
+        source = _migrate_legacy_source_hash(sekai, repositories, source, bundle, evidence_hash)
 
     drafted = generate_draft(chisei, bundle, namespace=namespace)
-    validation = validate_claims(chisei, drafted.draft, bundle, namespace=namespace)
+    validation = validate_claims(
+        chisei,
+        drafted.draft,
+        bundle,
+        expected_claims=tuple(claim.text for claim in drafted.claims),
+        namespace=namespace,
+    )
     if not validation.valid:
         raise ProposalWorkflowError("generated draft contains an unsupported factual claim")
     decision_id = str(
@@ -137,6 +143,28 @@ def _draft_evidence(drafted: DraftResult, evidence_hash: str) -> dict[str, str]:
         "receipt_complete": str(drafted.receipt_complete).lower(),
         "missing_surfaces": json.dumps(list(drafted.missing_surfaces), separators=(",", ":")),
     }
+
+
+def _migrate_legacy_source_hash(
+    sekai: SekaiGateway,
+    repositories: CausalRepositories,
+    source: SourceRecord,
+    bundle: EvidenceBundle,
+    evidence_hash: str,
+) -> SourceRecord:
+    legacy_hash = legacy_commit_evidence_hash(bundle, source.revision)
+    selections = sekai.list_decisions(actor="hibiki", action="hibiki.source_selection", limit=100)
+    traceable = any(
+        decision.target_id == source.external_id
+        and decision.outcome == "selected"
+        and decision.evidence.get("repository") == source.repository
+        and decision.evidence.get("revision") == source.revision
+        and decision.evidence.get("source_evidence_hash") == source.evidence_hash
+        for decision in selections
+    )
+    if source.evidence_hash != legacy_hash and not traceable:
+        raise ProposalWorkflowError("reloaded source evidence does not match the selected source")
+    return repositories.sources.put(replace(source, evidence_hash=evidence_hash))
 
 
 def _validation_decision_id(namespace: str, target_id: str, request_id: str) -> str:

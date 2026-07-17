@@ -190,6 +190,15 @@ def commit_evidence_hash(bundle: EvidenceBundle, revision: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def legacy_commit_evidence_hash(bundle: EvidenceBundle, revision: str) -> str:
+    """Return the pre-immutable-identity hash for migration checks."""
+    commit = next((entry for entry in bundle.commits if entry["revision"] == revision), None)
+    if commit is None:
+        raise SelectionError("selected revision is absent from the evidence bundle")
+    encoded = json.dumps(commit, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _normalize_topic(topic: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", topic.lower()))
 

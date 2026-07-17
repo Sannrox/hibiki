@@ -42,12 +42,20 @@ def validate_claims(
     text: str,
     bundle: EvidenceBundle,
     *,
+    expected_claims: tuple[str, ...],
     namespace: str = "hibiki",
 ) -> ValidationResult:
     if not text.strip():
         raise ClaimValidationError("final text must be a non-empty string")
     if len(bundle.commits) != 1:
         raise ClaimValidationError("claim validation requires exactly one evidence revision")
+    invalid_expected_claim = any(
+        not claim.strip() or claim not in text for claim in expected_claims
+    )
+    if not expected_claims or invalid_expected_claim:
+        raise ClaimValidationError(
+            "expected claims must be non-empty verbatim substrings of final text"
+        )
     text_hash = hashlib.sha256(text.encode()).hexdigest()
     request_id = f"hibiki-validation-{text_hash[:24]}-{bundle.content_hash[:12]}"
     plan = gateway.plan_execution(
@@ -55,7 +63,7 @@ def validate_claims(
             input=chisei_pb2.ExecutionInput(
                 request_id=request_id,
                 namespace=namespace,
-                spec=_validation_spec(text, bundle),
+                spec=_validation_spec(text, expected_claims, bundle),
                 task_type="factual_claim_validation",
                 task_class="public_content_validation",
                 max_tokens=1_500,
@@ -81,7 +89,9 @@ def validate_claims(
         raise ClaimValidationError(f"Chisei rejected validation plan: {reason}")
 
     executed = gateway.execute_plan(plan)
-    valid, reasoning, claims = _parse_validation(executed.response.content, text, bundle)
+    valid, reasoning, claims = _parse_validation(
+        executed.response.content, text, expected_claims, bundle
+    )
     receipt = gateway.get_operation_receipt(
         chisei_pb2.GetOperationReceiptRequest(operation_id=plan.plan_id)
     )
@@ -100,11 +110,12 @@ def validate_claims(
     )
 
 
-def _validation_spec(text: str, bundle: EvidenceBundle) -> str:
+def _validation_spec(text: str, expected_claims: tuple[str, ...], bundle: EvidenceBundle) -> str:
     return json.dumps(
         {
             "task": "Inventory and validate every factual claim in the final text.",
             "final_text": text,
+            "expected_claims": list(expected_claims),
             "response_schema": {
                 "valid": "boolean; true only when every claim is supported",
                 "reasoning": "non-empty string",
@@ -120,7 +131,7 @@ def _validation_spec(text: str, bundle: EvidenceBundle) -> str:
                 ],
             },
             "requirements": [
-                "include every factual claim from final_text exactly once",
+                "return every expected_claim exactly once with identical text",
                 "mark valid=false when any claim is unsupported",
                 "supported claims require at least one in-bundle evidence reference",
                 "unsupported claims must have no source references",
@@ -134,7 +145,10 @@ def _validation_spec(text: str, bundle: EvidenceBundle) -> str:
 
 
 def _parse_validation(
-    content: str, text: str, bundle: EvidenceBundle
+    content: str,
+    text: str,
+    expected_claims: tuple[str, ...],
+    bundle: EvidenceBundle,
 ) -> tuple[bool, str, tuple[ValidatedClaim, ...]]:
     try:
         payload = json.loads(content)
@@ -195,6 +209,8 @@ def _parse_validation(
         claims.append(ValidatedClaim(claim_text, supported, reason, tuple(references)))
 
     valid = payload["valid"]
+    if seen_claims != set(expected_claims) or len(claims) != len(expected_claims):
+        raise ClaimValidationError("validation response omitted or added a factual claim")
     if valid != all(claim.supported for claim in claims):
         raise ClaimValidationError("validation verdict does not match claim support results")
     return valid, reasoning, tuple(claims)
