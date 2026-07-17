@@ -368,6 +368,12 @@ def test_path_only_character_splits_protocol_inside_query() -> None:
     assert _safe_x_text_weight(text) == 281
 
 
+def test_protocol_inside_balanced_path_parentheses_is_not_counted_twice() -> None:
+    text = f"{'a' * 246} https://a.music/(https://b.music)"
+
+    assert _safe_x_text_weight(text) == 280
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)
