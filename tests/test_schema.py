@@ -51,3 +51,6 @@ def test_schema_properties_encode_retry_and_causal_identity() -> None:
     }
     assert proposal_properties["source_external_id"].required is True
     assert publication_properties["proposal_external_id"].required is True
+    assert publication_properties["target_account"].required is True
+    assert publication_properties["attempted_at"].required is True
+    assert publication_properties["approval_id"].required is True

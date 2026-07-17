@@ -209,6 +209,8 @@ class PublicationRecord(_Record):
     stable_id: str
     proposal_external_id: str
     final_text: str
+    target_account: str
+    attempted_at: int
     status: str = "intent"
     approval_id: str = ""
     approval_expires_at: str = ""
@@ -220,8 +222,14 @@ class PublicationRecord(_Record):
             stable_id=self.stable_id,
             proposal_external_id=self.proposal_external_id,
             final_text=self.final_text,
+            target_account=self.target_account,
+            approval_id=self.approval_id,
         )
         _require_choice("status", self.status, PUBLICATION_STATUSES)
+        if self.attempted_at < 0:
+            raise RecordValidationError("attempted_at must not be negative")
+        if self.status == "posted" and not self.post_id.strip():
+            raise RecordValidationError("posted publication must contain a post_id")
 
     @property
     def final_text_hash(self) -> str:
@@ -232,6 +240,8 @@ class PublicationRecord(_Record):
             "proposal_external_id": self.proposal_external_id,
             "final_text": self.final_text,
             "final_text_hash": self.final_text_hash,
+            "target_account": self.target_account,
+            "attempted_at": str(self.attempted_at),
             "status": self.status,
             "approval_id": self.approval_id,
             "approval_expires_at": self.approval_expires_at,
@@ -242,11 +252,17 @@ class PublicationRecord(_Record):
     def from_properties(
         cls, namespace: str, stable_id: str, properties: Mapping[str, str]
     ) -> PublicationRecord:
+        try:
+            attempted_at = int(properties.get("attempted_at", ""))
+        except ValueError as error:
+            raise RecordValidationError("stored publication attempted_at is invalid") from error
         record = cls(
             namespace=namespace,
             stable_id=stable_id,
             proposal_external_id=properties.get("proposal_external_id", ""),
             final_text=properties.get("final_text", ""),
+            target_account=properties.get("target_account", ""),
+            attempted_at=attempted_at,
             status=properties.get("status", ""),
             approval_id=properties.get("approval_id", ""),
             approval_expires_at=properties.get("approval_expires_at", ""),

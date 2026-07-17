@@ -102,6 +102,7 @@ def _draft_source_locked(
     if source is None:
         raise ProposalWorkflowError(f"source not found: {source_external_id}")
     existing_proposal = repositories.proposals.get(source.stable_id)
+    _require_no_pending_publication(repositories, source.stable_id)
     if existing_proposal is not None and existing_proposal.status in {"published", "rejected"}:
         raise ProposalWorkflowError(
             f"proposal in {existing_proposal.status} state cannot be drafted again"
@@ -221,6 +222,7 @@ def _validate_proposal_edit_locked(
     proposal = repositories.proposals.get_external(proposal_external_id)
     if proposal is None:
         raise ProposalWorkflowError(f"proposal not found: {proposal_external_id}")
+    _require_no_pending_publication(repositories, proposal.stable_id)
     if not final_text.strip():
         raise ProposalWorkflowError("final text must be a non-empty string")
     if proposal.status not in {"drafted", "approved", "invalidated"}:
@@ -431,6 +433,17 @@ def _proposal_external_id_for_source(source_external_id: str, namespace: str) ->
     if not source_external_id.startswith(prefix) or source_external_id == prefix:
         raise ProposalWorkflowError(f"source external ID must identify {namespace}/hibiki.source")
     return f"hibiki.proposal:{namespace}:{source_external_id.removeprefix(prefix)}"
+
+
+def _require_no_pending_publication(
+    repositories: CausalRepositories,
+    stable_id: str,
+) -> None:
+    publication = repositories.publications.get(stable_id)
+    if publication is not None and publication.status in {"intent", "uncertain"}:
+        raise ProposalWorkflowError(
+            "proposal cannot change while a publication attempt needs reconciliation"
+        )
 
 
 @contextmanager

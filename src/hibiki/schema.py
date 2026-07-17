@@ -76,13 +76,26 @@ HIBIKI_SCHEMA_TYPES = (
             _property("final_text", required=True, description="Exact text intended for X."),
             _property("final_text_hash", required=True, description="Approved text SHA-256."),
             _property(
+                "target_account", required=True, description="BirdClaw account selected for X."
+            ),
+            _property(
+                "attempted_at",
+                "timestamp",
+                required=True,
+                description="Time immediately before the first external write attempt.",
+            ),
+            _property(
                 "status",
                 "enum",
                 required=True,
                 description="Publication reconciliation state.",
                 enum_values=("intent", "posted", "uncertain", "failed"),
             ),
-            _property("approval_id", description="Hash-bound approval reference."),
+            _property(
+                "approval_id",
+                required=True,
+                description="Hash-bound approval reference.",
+            ),
             _property(
                 "approval_expires_at", "timestamp", description="Approval expiry when bounded."
             ),

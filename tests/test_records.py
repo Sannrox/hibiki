@@ -46,6 +46,8 @@ def test_fake_proposal_lifecycle_round_trips_through_sekai() -> None:
             stable_id="publication-abc123",
             proposal_external_id=approved.external_id,
             final_text=approved.draft,
+            target_account="builder",
+            attempted_at=1_750_000_000_000,
             approval_id="approval-1",
         )
     )

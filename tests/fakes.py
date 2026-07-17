@@ -12,17 +12,9 @@ class FakeProcessRunner:
         default_factory=lambda: ProcessResult(0, "gh version 2.76.0\n", "")
     )
     calls: list[tuple[tuple[str, ...], float]] = field(default_factory=list)
-    inputs: list[str | None] = field(default_factory=list)
 
-    def run(
-        self,
-        argv: tuple[str, ...],
-        timeout: float,
-        *,
-        input_text: str | None = None,
-    ) -> ProcessResult:
+    def run(self, argv: tuple[str, ...], timeout: float) -> ProcessResult:
         self.calls.append((argv, timeout))
-        self.inputs.append(input_text)
         return self.result
 
 

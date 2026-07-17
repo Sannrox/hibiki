@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 
 from hibiki.boundaries import ProcessResult, ProcessRunner
 from hibiki.proposals import ProposalWorkflowError, proposal_lock, require_current_approval
@@ -11,6 +13,7 @@ from hibiki.records import CausalRepositories, ProposalRecord, PublicationRecord
 from hibiki.sekai import SekaiGateway
 
 BIRDCLAW_TIMEOUT_SECONDS = 30.0
+AUTHORED_LOOKBACK = timedelta(minutes=5)
 
 
 class PublicationWorkflowError(RuntimeError):
@@ -47,20 +50,8 @@ def publish_proposal(
         if proposal is None:
             raise PublicationWorkflowError(f"proposal not found: {proposal_external_id}")
         publication = repositories.publications.get(proposal.stable_id)
-        if proposal.status == "published":
-            if publication is None or publication.status != "posted":
-                raise PublicationWorkflowError(
-                    "published proposal has no completed publication record"
-                )
-            _require_matching_intent(publication, proposal, proposal.decision_ref)
-            return PublicationResult(proposal, publication, True)
-        try:
-            approval_id = require_current_approval(sekai, proposal, proposal.draft)
-        except ProposalWorkflowError as error:
-            raise PublicationWorkflowError(str(error)) from error
-
         if publication is not None:
-            _require_matching_intent(publication, proposal, approval_id)
+            _require_publication_owner(publication, proposal)
             if publication.status == "posted":
                 proposal = _mark_proposal_published(repositories, proposal)
                 return PublicationResult(proposal, publication, True)
@@ -70,35 +61,45 @@ def publish_proposal(
                     repositories,
                     proposal,
                     publication,
-                    account,
                 )
 
+        try:
+            approval_id = require_current_approval(sekai, proposal, proposal.draft)
+        except ProposalWorkflowError as error:
+            raise PublicationWorkflowError(str(error)) from error
+
+        now_ms = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
         intent = PublicationRecord(
             namespace=namespace,
             stable_id=proposal.stable_id,
             proposal_external_id=proposal.external_id,
             final_text=proposal.draft,
+            target_account=account,
+            attempted_at=now_ms,
             status="intent",
             approval_id=approval_id,
         )
         intent = repositories.publications.put(intent)
-        request = {
-            "account": account,
-            "client_reference": intent.external_id,
-            "text": intent.final_text,
-        }
         try:
-            response = _run_json(
+            response = _run_json_object(
                 process_runner,
-                ("birdclaw", "post", "--json"),
-                request,
+                (
+                    "birdclaw",
+                    "compose",
+                    "post",
+                    "--account",
+                    intent.target_account,
+                    intent.final_text,
+                    "--json",
+                ),
+                "compose post",
             )
         except (OSError, subprocess.TimeoutExpired, PublicationWorkflowError) as error:
             repositories.publications.put(replace(intent, status="uncertain"))
             raise PublicationWorkflowError(
                 "BirdClaw publication outcome is uncertain; reconcile before retrying"
             ) from error
-        if response.get("accepted") is not True:
+        if response.get("ok") is not True:
             repositories.publications.put(replace(intent, status="uncertain"))
             raise PublicationWorkflowError(
                 "BirdClaw did not acknowledge publication; outcome is uncertain"
@@ -109,7 +110,6 @@ def publish_proposal(
             repositories,
             proposal,
             intent,
-            account,
         )
 
 
@@ -118,9 +118,8 @@ def _reconcile_prior_attempt(
     repositories: CausalRepositories,
     proposal: ProposalRecord,
     publication: PublicationRecord,
-    account: str,
 ) -> PublicationResult:
-    post_id = _find_authored_post(process_runner, account, publication.external_id)
+    post_id = _find_authored_post(process_runner, publication)
     if post_id is None:
         repositories.publications.put(replace(publication, status="failed"))
         raise PublicationWorkflowError(
@@ -138,10 +137,9 @@ def _read_back_new_post(
     repositories: CausalRepositories,
     proposal: ProposalRecord,
     publication: PublicationRecord,
-    account: str,
 ) -> PublicationResult:
     try:
-        post_id = _find_authored_post(process_runner, account, publication.external_id)
+        post_id = _find_authored_post(process_runner, publication)
     except (OSError, subprocess.TimeoutExpired, PublicationWorkflowError) as error:
         repositories.publications.put(replace(publication, status="uncertain"))
         raise PublicationWorkflowError(
@@ -161,48 +159,99 @@ def _read_back_new_post(
 
 def _find_authored_post(
     process_runner: ProcessRunner,
-    account: str,
-    client_reference: str,
+    publication: PublicationRecord,
 ) -> str | None:
-    response = _run_json(
+    account = publication.target_account
+    _run_json_object(
         process_runner,
-        ("birdclaw", "authored-posts", "--json"),
-        {"account": account, "client_reference": client_reference},
+        (
+            "birdclaw",
+            "sync",
+            "authored",
+            "--account",
+            account,
+            "--mode",
+            "xurl",
+            "--limit",
+            "100",
+            "--json",
+        ),
+        "sync authored",
     )
-    posts = response.get("posts")
-    if not isinstance(posts, list):
-        raise PublicationWorkflowError("BirdClaw authored-posts response must contain posts")
+    since = _authored_since(publication.attempted_at)
+    posts = _run_json_list(
+        process_runner,
+        (
+            "birdclaw",
+            "search",
+            "tweets",
+            "--resource",
+            "authored",
+            "--account",
+            account,
+            "--since",
+            since,
+            "--limit",
+            "100",
+            "--json",
+        ),
+        "search tweets",
+    )
     matches: list[str] = []
     for post in posts:
-        if not isinstance(post, dict) or post.get("client_reference") != client_reference:
+        if not isinstance(post, dict):
+            raise PublicationWorkflowError("BirdClaw search tweets returned an invalid item")
+        if post.get("accountId") != account or post.get("text") != publication.final_text:
             continue
-        post_id = post.get("post_id")
+        post_id = post.get("id")
         if not isinstance(post_id, str) or not post_id.strip():
-            raise PublicationWorkflowError("BirdClaw authored post has no post_id")
+            raise PublicationWorkflowError("BirdClaw authored post has no X identifier")
         matches.append(post_id)
     if len(matches) > 1:
-        raise PublicationWorkflowError("BirdClaw returned duplicate authored posts for one intent")
+        raise PublicationWorkflowError(
+            "BirdClaw returned multiple matching authored posts for one intent"
+        )
     return matches[0] if matches else None
+
+
+def _authored_since(attempted_at: int) -> str:
+    attempted = datetime.fromtimestamp(attempted_at / 1000, tz=UTC)
+    return (attempted - AUTHORED_LOOKBACK).isoformat().replace("+00:00", "Z")
+
+
+def _run_json_object(
+    process_runner: ProcessRunner,
+    argv: tuple[str, ...],
+    command: str,
+) -> dict[str, object]:
+    payload = _run_json(process_runner, argv, command)
+    if not isinstance(payload, dict):
+        raise PublicationWorkflowError(f"BirdClaw {command} must return one JSON object")
+    return payload
+
+
+def _run_json_list(
+    process_runner: ProcessRunner,
+    argv: tuple[str, ...],
+    command: str,
+) -> list[object]:
+    payload = _run_json(process_runner, argv, command)
+    if not isinstance(payload, list):
+        raise PublicationWorkflowError(f"BirdClaw {command} must return one JSON array")
+    return payload
 
 
 def _run_json(
     process_runner: ProcessRunner,
     argv: tuple[str, ...],
-    request: Mapping[str, object],
-) -> dict[str, object]:
-    result = process_runner.run(
-        argv,
-        BIRDCLAW_TIMEOUT_SECONDS,
-        input_text=json.dumps(request, separators=(",", ":"), sort_keys=True),
-    )
-    _require_success(result, argv[1])
+    command: str,
+) -> object:
+    result = process_runner.run(argv, BIRDCLAW_TIMEOUT_SECONDS)
+    _require_success(result, command)
     try:
-        payload = json.loads(result.stdout)
+        return json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise PublicationWorkflowError(f"BirdClaw {argv[1]} returned invalid JSON") from error
-    if not isinstance(payload, dict):
-        raise PublicationWorkflowError(f"BirdClaw {argv[1]} must return one JSON object")
-    return payload
+        raise PublicationWorkflowError(f"BirdClaw {command} returned invalid JSON") from error
 
 
 def _require_success(result: ProcessResult, command: str) -> None:
@@ -212,19 +261,12 @@ def _require_success(result: ProcessResult, command: str) -> None:
     raise PublicationWorkflowError(f"BirdClaw {command} failed: {detail}")
 
 
-def _require_matching_intent(
+def _require_publication_owner(
     publication: PublicationRecord,
     proposal: ProposalRecord,
-    approval_id: str,
 ) -> None:
-    if (
-        publication.proposal_external_id != proposal.external_id
-        or publication.final_text != proposal.draft
-        or publication.approval_id != approval_id
-    ):
-        raise PublicationWorkflowError(
-            "stored publication intent does not match the approved proposal"
-        )
+    if publication.proposal_external_id != proposal.external_id:
+        raise PublicationWorkflowError("stored publication intent belongs to another proposal")
 
 
 def _mark_proposal_published(
