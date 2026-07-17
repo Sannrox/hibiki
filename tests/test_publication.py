@@ -13,7 +13,11 @@ from hibiki.proposals import (
     draft_source,
     validate_proposal_edit,
 )
-from hibiki.publication import PublicationWorkflowError, publish_proposal
+from hibiki.publication import (
+    PublicationWorkflowError,
+    _safe_x_text_weight,
+    publish_proposal,
+)
 from hibiki.records import (
     CausalRepositories,
     ProposalRecord,
@@ -298,6 +302,14 @@ def test_current_tld_url_is_not_undercounted_by_stale_parser_data() -> None:
 
     assert CausalRepositories.create(sekai, "hibiki").publications.get(proposal.stable_id) is None
     assert runner.calls == []
+
+
+def test_known_url_is_not_double_counted_by_fallback_matcher() -> None:
+    assert _safe_x_text_weight(f"{'a' * 243} https://github.com") == 267
+
+
+def test_idn_with_current_tld_is_not_undercounted() -> None:
+    assert _safe_x_text_weight(f"{'a' * 257} https://例.music") == 281
 
 
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:

@@ -4,10 +4,12 @@ import json
 import re
 import subprocess
 import time
+import unicodedata
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from hibiki.boundaries import ProcessResult, ProcessRunner
 from hibiki.proposals import ProposalWorkflowError, proposal_lock, require_current_approval
@@ -19,7 +21,7 @@ AUTHORED_LOOKBACK = timedelta(minutes=5)
 X_SNOWFLAKE_EPOCH_MS = 1_288_834_974_657
 MAX_SAFE_X_TEXT_WEIGHT = 280
 X_SHORT_URL_WEIGHT = 23
-PROTOCOL_URL_PATTERN = re.compile(r"https?://[^\s<>\"'\x80-\uffff]+", re.IGNORECASE)
+PROTOCOL_PATTERN = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
 TRAILING_URL_PUNCTUATION = ".,!?;:)]}"
 
 
@@ -262,13 +264,34 @@ def _safe_x_text_weight(text: str) -> int:
         from twitter_text import parse_tweet
 
     weight = int(parse_tweet(text).weightedLength)
-    for match in PROTOCOL_URL_PATTERN.finditer(text):
-        candidate = match.group().rstrip(TRAILING_URL_PUNCTUATION)
-        if not candidate:
-            continue
+    for candidate in _protocol_url_candidates(text):
         literal_weight = int(parse_tweet(candidate).weightedLength)
         weight += max(0, X_SHORT_URL_WEIGHT - literal_weight)
     return weight
+
+
+def _protocol_url_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    for match in PROTOCOL_PATTERN.finditer(text):
+        end = match.end()
+        while end < len(text) and _is_conservative_url_character(text[end]):
+            end += 1
+        candidate = text[match.start() : end].rstrip(TRAILING_URL_PUNCTUATION)
+        try:
+            hostname = urlsplit(candidate).hostname
+        except ValueError:
+            continue
+        if hostname:
+            candidates.append(candidate)
+    return candidates
+
+
+def _is_conservative_url_character(character: str) -> bool:
+    if character.isspace() or character in "<>\"'":
+        return False
+    if character.isascii():
+        return True
+    return unicodedata.category(character)[0] in {"L", "M", "N"}
 
 
 def _run_json_object(
