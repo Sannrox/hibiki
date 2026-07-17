@@ -192,6 +192,31 @@ def test_confirmation_retry_repairs_a_missing_calibration_evaluation() -> None:
     )
 
 
+def test_confirmation_retry_does_not_duplicate_an_existing_evaluation() -> None:
+    class DuplicateRejectingGateway(FakeSekaiGateway):
+        def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision:
+            if decision.id in self.decisions:
+                raise RuntimeError("duplicate decision")
+            return super().record_decision(decision)
+
+    base, publication = setup_publication()
+    sekai = DuplicateRejectingGateway(
+        objects=base.objects,
+        evidence_results=base.evidence_results,
+    )
+    classify_replies(
+        sekai,
+        FakeChiseiGateway(classification_payload(1)),
+        publication.external_id,
+        "hibiki",
+    )
+    confirm_classification(sekai, "reply-submission-0", "potential_user")
+
+    result = confirm_classification(sekai, "reply-submission-0", "potential_user")
+
+    assert result.confirmed_count == 1
+
+
 def test_calibrated_high_confidence_classification_can_be_automatic() -> None:
     sekai, publication = setup_publication()
     for index in range(25):

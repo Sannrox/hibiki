@@ -170,18 +170,24 @@ def confirm_classification(
         )
     else:
         confirmation = existing
-    sekai.record_decision(
-        sekai_pb2.Decision(
-            id=_decision_id("evaluation", submission_id),
-            timestamp=confirmation.timestamp,
-            actor="operator",
-            action=CALIBRATION_ACTION,
-            reason="calibration evaluation for governed reply classification",
-            evidence={"publication_external_id": submission.target_external_id},
-            target_id=submission_id,
-            outcome=confirmation.outcome,
-        )
+    evaluations = sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
+    evaluated_targets = {item.target_id for item in evaluations}
+    recoverable = len(evaluations) < 500 or confirmation.timestamp >= min(
+        item.timestamp for item in evaluations
     )
+    if submission_id not in evaluated_targets and recoverable:
+        sekai.record_decision(
+            sekai_pb2.Decision(
+                id=_decision_id("evaluation", submission_id),
+                timestamp=confirmation.timestamp,
+                actor="operator",
+                action=CALIBRATION_ACTION,
+                reason="calibration evaluation for governed reply classification",
+                evidence={"publication_external_id": submission.target_external_id},
+                target_id=submission_id,
+                outcome=confirmation.outcome,
+            )
+        )
     confirmed_count, calibrated = _calibration(sekai)
     return ConfirmationResult(
         submission_id, predicted, category, predicted != category, confirmed_count, calibrated
