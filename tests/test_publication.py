@@ -330,6 +330,16 @@ def test_fuzzy_domain_is_not_treated_as_explicit_url() -> None:
     assert _safe_x_text_weight(f"{'a' * 264} foo.web") == 272
 
 
+def test_protocol_after_ascii_letter_is_not_given_a_synthetic_boundary() -> None:
+    assert _safe_x_text_weight(f"{'a' * 258}https://nic.music") == 275
+
+
+def test_protocol_inside_recognized_url_is_not_counted_twice() -> None:
+    text = "https://example.com/日https://nic.music"
+
+    assert _safe_x_text_weight(text) == 42
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)

@@ -261,14 +261,16 @@ def _safe_x_text_weight(text: str) -> int:
             message="pkg_resources is deprecated as an API.*",
             category=UserWarning,
         )
-        from twitter_text import parse_tweet
+        from twitter_text import extract_urls_with_indices, parse_tweet
 
     weight = int(parse_tweet(text).weightedLength)
     linkable_characters = [
         character if _is_linkable_character(character) else " " for character in text
     ]
+    recognized_ranges = [tuple(item["indices"]) for item in extract_urls_with_indices(text)]
+    protected_tokens = _recognized_url_token_mask(text, recognized_ranges)
     for protocol in PROTOCOL_PATTERN.finditer(text):
-        if protocol.start() > 0:
+        if _needs_x_specific_boundary(text, protocol.start(), protected_tokens):
             linkable_characters[protocol.start() - 1] = " "
     linkable_text = "".join(linkable_characters)
     for match in LinkifyIt().match(linkable_text) or []:
@@ -284,6 +286,36 @@ def _is_linkable_character(character: str) -> bool:
     if character.isascii():
         return True
     return unicodedata.category(character)[0] in {"L", "M", "N"}
+
+
+def _needs_x_specific_boundary(
+    text: str,
+    start: int,
+    protected_tokens: bytearray,
+) -> bool:
+    if start == 0 or protected_tokens[start]:
+        return False
+    preceding = text[start - 1]
+    return preceding == "_" or (
+        not preceding.isascii()
+        and unicodedata.category(preceding)[0] in {"L", "M", "N"}
+    )
+
+
+def _recognized_url_token_mask(
+    text: str,
+    recognized_ranges: list[tuple[int, int]],
+) -> bytearray:
+    recognized = bytearray(len(text))
+    for lower, upper in recognized_ranges:
+        recognized[lower:upper] = b"\1" * (upper - lower)
+    protected = bytearray(len(text))
+    for token in re.finditer(r"\S+", text):
+        if any(recognized[token.start() : token.end()]):
+            protected[token.start() : token.end()] = b"\1" * (
+                token.end() - token.start()
+            )
+    return protected
 
 
 def _run_json_object(
