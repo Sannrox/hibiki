@@ -334,10 +334,14 @@ def test_protocol_after_ascii_letter_is_not_given_a_synthetic_boundary() -> None
     assert _safe_x_text_weight(f"{'a' * 258}https://nic.music") == 275
 
 
+def test_protocol_after_x_valid_ascii_symbol_is_weighted() -> None:
+    assert _safe_x_text_weight(f"{'a' * 257}+https://nic.music") == 281
+
+
 def test_protocol_inside_recognized_url_is_not_counted_twice() -> None:
     text = "https://example.com/日https://nic.music"
 
-    assert _safe_x_text_weight(text) == 42
+    assert _safe_x_text_weight(text) == 48
 
 
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:

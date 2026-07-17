@@ -268,9 +268,9 @@ def _safe_x_text_weight(text: str) -> int:
         character if _is_linkable_character(character) else " " for character in text
     ]
     recognized_ranges = [tuple(item["indices"]) for item in extract_urls_with_indices(text)]
-    protected_tokens = _recognized_url_token_mask(text, recognized_ranges)
+    recognized_urls = _recognized_url_mask(text, recognized_ranges)
     for protocol in PROTOCOL_PATTERN.finditer(text):
-        if _needs_x_specific_boundary(text, protocol.start(), protected_tokens):
+        if _needs_x_specific_boundary(text, protocol.start(), recognized_urls):
             linkable_characters[protocol.start() - 1] = " "
     linkable_text = "".join(linkable_characters)
     for match in LinkifyIt().match(linkable_text) or []:
@@ -291,31 +291,24 @@ def _is_linkable_character(character: str) -> bool:
 def _needs_x_specific_boundary(
     text: str,
     start: int,
-    protected_tokens: bytearray,
+    recognized_urls: bytearray,
 ) -> bool:
-    if start == 0 or protected_tokens[start]:
+    if start == 0 or recognized_urls[start]:
         return False
     preceding = text[start - 1]
-    return preceding == "_" or (
-        not preceding.isascii()
-        and unicodedata.category(preceding)[0] in {"L", "M", "N"}
-    )
+    if preceding.isascii():
+        return not preceding.isalnum() and preceding not in "@$#"
+    return unicodedata.category(preceding)[0] in {"L", "M", "N"}
 
 
-def _recognized_url_token_mask(
+def _recognized_url_mask(
     text: str,
     recognized_ranges: list[tuple[int, int]],
 ) -> bytearray:
     recognized = bytearray(len(text))
     for lower, upper in recognized_ranges:
         recognized[lower:upper] = b"\1" * (upper - lower)
-    protected = bytearray(len(text))
-    for token in re.finditer(r"\S+", text):
-        if any(recognized[token.start() : token.end()]):
-            protected[token.start() : token.end()] = b"\1" * (
-                token.end() - token.start()
-            )
-    return protected
+    return recognized
 
 
 def _run_json_object(
