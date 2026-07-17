@@ -435,12 +435,17 @@ def _proposal_lock(proposal_external_id: str) -> Iterator[None]:
     lock_path = os.path.join(tempfile.gettempdir(), lock_name)
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(lock_path, flags, 0o600)
+    acquired = False
     try:
         _lock_descriptor(descriptor)
+        acquired = True
         yield
     finally:
-        _unlock_descriptor(descriptor)
-        os.close(descriptor)
+        try:
+            if acquired:
+                _unlock_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def _lock_descriptor(descriptor: int) -> None:
