@@ -33,7 +33,12 @@ def result(payload: object) -> ProcessResult:
 def fixture_runner(*, visibility: str = "public", patch: str = "+bounded change") -> FixtureRunner:
     repository = "example/tenkai"
     revision = "abc123"
-    document = base64.b64encode(b"# Public design\n").decode()
+    document = "\n".join(
+        (
+            base64.b64encode(b"# Public design\n").decode()[:10],
+            base64.b64encode(b"# Public design\n").decode()[10:],
+        )
+    )
     return FixtureRunner(
         {
             ("gh", "api", f"repos/{repository}"): result(
@@ -56,7 +61,17 @@ def fixture_runner(*, visibility: str = "public", patch: str = "+bounded change"
                 "-f",
                 "since=2026-07-16T09:00:00Z",
             ): result([{"sha": revision}]),
-            ("gh", "api", f"repos/{repository}/commits/{revision}"): result(
+            (
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                f"repos/{repository}/commits/{revision}",
+                "-f",
+                "per_page=100",
+                "-f",
+                "page=1",
+            ): result(
                 {
                     "sha": revision,
                     "html_url": f"https://github.com/{repository}/commit/{revision}",

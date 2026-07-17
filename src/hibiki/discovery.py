@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +23,7 @@ class SensitiveDataError(DiscoveryError):
 @dataclass(frozen=True, slots=True)
 class DiscoveryLimits:
     max_commits: int = 20
+    max_files_per_commit: int = 100
     max_bundle_bytes: int = 96_000
     max_patch_bytes: int = 32_000
     max_document_bytes: int = 16_000
@@ -118,7 +120,19 @@ def discover_public_sources(
             raise DiscoveryError("GitHub commit listing contains a non-object entry")
         revision = _required_string(summary, "sha", "commit listing")
         detail = _gh_json(
-            runner, ("gh", "api", f"repos/{repository}/commits/{revision}"), limits.timeout
+            runner,
+            (
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                f"repos/{repository}/commits/{revision}",
+                "-f",
+                f"per_page={limits.max_files_per_commit}",
+                "-f",
+                "page=1",
+            ),
+            limits.timeout,
         )
         checks = _gh_json(
             runner,
@@ -169,6 +183,14 @@ def _build_commit(
     files = detail.get("files")
     if not isinstance(commit, dict) or not isinstance(files, list):
         raise DiscoveryError(f"commit {revision} detail is missing commit or files")
+    if len(files) >= limits.max_files_per_commit:
+        omissions.append(
+            {
+                "revision": revision,
+                "path": "*",
+                "reason": f"file_list_limited_to_{limits.max_files_per_commit}",
+            }
+        )
     message = _required_string(commit, "message", f"commit {revision}")
     html_url = _required_string(detail, "html_url", f"commit {revision}")
     if html_url != f"https://github.com/{repository}/commit/{revision}":
@@ -243,7 +265,8 @@ def _fetch_document(
     if not isinstance(content, str):
         raise DiscoveryError(f"changed document {path!r} has no content")
     try:
-        decoded = base64.b64decode(content, validate=True)
+        normalized_content = "".join(content.split())
+        decoded = base64.b64decode(normalized_content, validate=True)
     except ValueError as error:
         raise DiscoveryError(f"changed document {path!r} has invalid base64 content") from error
     if len(decoded) > limits.max_document_bytes:
@@ -284,7 +307,7 @@ def _gh_json(
 ) -> object:
     try:
         result = runner.run(argv, timeout)
-    except (OSError, TimeoutError) as error:
+    except (OSError, TimeoutError, subprocess.TimeoutExpired) as error:
         raise DiscoveryError(f"gh invocation failed: {error}") from error
     if result.returncode != 0:
         if allow_not_found and result.returncode == 1 and "HTTP 404" in result.stderr:
@@ -340,6 +363,7 @@ def _validate_limits(limits: DiscoveryLimits) -> None:
     if (
         min(
             limits.max_commits,
+            limits.max_files_per_commit,
             limits.max_bundle_bytes,
             limits.max_patch_bytes,
             limits.max_document_bytes,
