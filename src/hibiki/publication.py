@@ -268,6 +268,7 @@ def _safe_x_text_weight(text: str) -> int:
         from twitter_text.regexp.valid_url_balanced_parens import (
             valid_url_balanced_parens,
         )
+        from twitter_text.regexp.valid_url_path import valid_url_path
         from twitter_text.regexp.valid_url_query_chars import valid_url_query_chars
 
     weight = int(parse_tweet(text).weightedLength)
@@ -279,6 +280,7 @@ def _safe_x_text_weight(text: str) -> int:
         text,
         linkifier.match("".join(linkable_characters)) or [],
         valid_url_balanced_parens,
+        valid_url_path,
     )
     recognized_ranges = [tuple(item["indices"]) for item in extract_urls_with_indices(text)]
     recognized_urls = _recognized_url_mask(text, recognized_ranges)
@@ -346,6 +348,7 @@ def _linkified_url_component_mask(
     text: str,
     matches: list[object],
     balanced_parens: re.Pattern[str],
+    valid_path: re.Pattern[str],
 ) -> bytearray:
     components = bytearray(len(text))
     for match in matches:
@@ -357,11 +360,17 @@ def _linkified_url_component_mask(
                 else match.index + query_offset
             )
             components[match.index:path_end] = b"\1" * (path_end - match.index)
-            path = match.raw[: path_end - match.index]
-            for balanced in balanced_parens.finditer(path):
-                lower = match.index + balanced.start()
-                upper = match.index + balanced.end()
-                components[lower:upper] = b"\3" * (upper - lower)
+            raw_path_end = path_end - match.index
+            authority_start = match.raw.find("://") + 3
+            path_start = match.raw.find("/", authority_start, raw_path_end)
+            if path_start != -1:
+                path = match.raw[path_start + 1 : raw_path_end]
+                for balanced in balanced_parens.finditer(path):
+                    if not valid_path.fullmatch(path[: balanced.end()]):
+                        continue
+                    lower = match.index + path_start + 1 + balanced.start()
+                    upper = match.index + path_start + 1 + balanced.end()
+                    components[lower:upper] = b"\3" * (upper - lower)
             components[path_end : match.last_index] = b"\2" * (
                 match.last_index - path_end
             )
