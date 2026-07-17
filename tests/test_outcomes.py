@@ -7,6 +7,7 @@ import pytest
 from hibiki.contracts import sekai_pb2
 from hibiki.evidence import PRODUCER_IDENTITY, REPLY_TYPE, SNAPSHOT_TYPE
 from hibiki.outcomes import (
+    CALIBRATION_ACTION,
     CATEGORIES,
     OutcomeWorkflowError,
     build_outcome_report,
@@ -167,7 +168,7 @@ def test_calibrated_high_confidence_classification_can_be_automatic() -> None:
                 id=f"confirmation-{index}",
                 timestamp=index,
                 actor="operator",
-                action="hibiki.reply_classification_confirmation",
+                action=CALIBRATION_ACTION,
                 target_id=f"prior-{index}",
                 outcome="correct",
                 evidence={"confirmed_category": "potential_user"},
@@ -190,7 +191,7 @@ def test_low_accuracy_does_not_enable_automatic_classification() -> None:
                 id=f"confirmation-{index}",
                 timestamp=index,
                 actor="operator",
-                action="hibiki.reply_classification_confirmation",
+                action=CALIBRATION_ACTION,
                 target_id=f"prior-{index}",
                 outcome="correct" if index < 20 else "corrected",
                 evidence={"confirmed_category": "potential_user"},
@@ -205,7 +206,7 @@ def test_low_accuracy_does_not_enable_automatic_classification() -> None:
     assert result.classifications[0].disposition == "confirmation_required"
 
 
-def test_calibration_paginates_complete_decision_history() -> None:
+def test_calibration_uses_the_latest_bounded_evaluation_window() -> None:
     sekai, publication = setup_publication()
     for index in range(501):
         sekai.record_decision(
@@ -213,7 +214,7 @@ def test_calibration_paginates_complete_decision_history() -> None:
                 id=f"confirmation-{index}",
                 timestamp=index + 1,
                 actor="operator",
-                action="hibiki.reply_classification_confirmation",
+                action=CALIBRATION_ACTION,
                 target_id=f"prior-{index}",
                 outcome="correct",
                 evidence={"confirmed_category": "potential_user"},
@@ -224,7 +225,7 @@ def test_calibration_paginates_complete_decision_history() -> None:
         sekai, FakeChiseiGateway(classification_payload(1)), publication.external_id, "hibiki"
     )
 
-    assert result.confirmed_count == 501
+    assert result.confirmed_count == 500
     assert result.calibrated is True
 
 

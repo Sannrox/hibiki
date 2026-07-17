@@ -38,8 +38,8 @@ AUTOMATIC_CONFIDENCE_BPS = 9_000
 CALIBRATION_ACCURACY_BPS = 9_000
 CLASSIFICATION_ACTION = "hibiki.reply_classification"
 CONFIRMATION_ACTION = "hibiki.reply_classification_confirmation"
+CALIBRATION_ACTION = "hibiki.reply_classification_evaluation"
 CLASSIFICATION_BATCH_SIZE = 20
-DECISION_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +89,8 @@ def classify_replies(
 ) -> ClassificationResult:
     publication = _publication(sekai, publication_external_id, namespace)
     replies = _submissions(sekai, publication.external_id, REPLY_TYPE)
-    existing = _latest_by_target(_all_decisions(sekai, "hibiki", CLASSIFICATION_ACTION))
+    action = _scoped_action(CLASSIFICATION_ACTION, publication.external_id)
+    existing = _latest_by_target(sekai.list_decisions(actor="hibiki", action=action, limit=500))
     pending = tuple(reply for reply in replies if reply.id not in existing)
     confirmed_count, calibrated = _calibration(sekai)
     if pending:
@@ -103,7 +104,7 @@ def classify_replies(
                     id=_decision_id("classification", item["submission_id"]),
                     timestamp=now + batch_start + item_index,
                     actor="hibiki",
-                    action=CLASSIFICATION_ACTION,
+                    action=action,
                     reason="governed native Chisei reply classification",
                     evidence={
                         "reply_id": item["reply_id"],
@@ -135,14 +136,18 @@ def confirm_classification(
     submission = sekai.get_evidence_submission(submission_id)
     if submission.evidence_type != REPLY_TYPE or submission.lifecycle_state != "available":
         raise OutcomeWorkflowError("confirmation target is not available reply evidence")
-    predictions = _latest_by_target(_all_decisions(sekai, "hibiki", CLASSIFICATION_ACTION))
+    classification_action = _scoped_action(CLASSIFICATION_ACTION, submission.target_external_id)
+    confirmation_action = _scoped_action(CONFIRMATION_ACTION, submission.target_external_id)
+    predictions = _latest_by_target(
+        sekai.list_decisions(actor="hibiki", action=classification_action, limit=500)
+    )
     prediction = predictions.get(submission_id)
     if prediction is None:
         raise OutcomeWorkflowError("reply must be classified before confirmation")
     predicted = prediction.evidence.get("category", "")
-    existing = _latest_by_target(_all_decisions(sekai, "operator", CONFIRMATION_ACTION)).get(
-        submission_id
-    )
+    existing = _latest_by_target(
+        sekai.list_decisions(actor="operator", action=confirmation_action, limit=500)
+    ).get(submission_id)
     if existing is not None and existing.evidence.get("confirmed_category") != category:
         raise OutcomeWorkflowError("classification confirmation is already recorded")
     if existing is None:
@@ -152,13 +157,25 @@ def confirm_classification(
                 id=_decision_id("confirmation", submission_id),
                 timestamp=now,
                 actor="operator",
-                action=CONFIRMATION_ACTION,
+                action=confirmation_action,
                 reason="operator evaluation of governed reply classification",
                 evidence={
                     "predicted_category": predicted,
                     "confirmed_category": category,
                     "prediction_decision_id": prediction.id,
                 },
+                target_id=submission_id,
+                outcome="correct" if predicted == category else "corrected",
+            )
+        )
+        sekai.record_decision(
+            sekai_pb2.Decision(
+                id=_decision_id("evaluation", submission_id),
+                timestamp=now,
+                actor="operator",
+                action=CALIBRATION_ACTION,
+                reason="calibration evaluation for governed reply classification",
+                evidence={"publication_external_id": submission.target_external_id},
                 target_id=submission_id,
                 outcome="correct" if predicted == category else "corrected",
             )
@@ -201,7 +218,13 @@ def build_outcome_report(
         for item in classification_result.classifications
         if replies_by_id[item.submission_id].observed_at_ms <= window_end
     )
-    confirmed = _latest_by_target(_all_decisions(sekai, "operator", CONFIRMATION_ACTION))
+    confirmed = _latest_by_target(
+        sekai.list_decisions(
+            actor="operator",
+            action=_scoped_action(CONFIRMATION_ACTION, publication.external_id),
+            limit=500,
+        )
+    )
     unresolved = tuple(
         item
         for item in window_classifications
@@ -414,30 +437,13 @@ def _latest_by_target(decisions: tuple[sekai_pb2.Decision, ...]) -> dict[str, se
 
 
 def _calibration(sekai: SekaiGateway) -> tuple[int, bool]:
-    confirmations = _latest_by_target(_all_decisions(sekai, "operator", CONFIRMATION_ACTION))
+    confirmations = _latest_by_target(
+        sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
+    )
     count = len(confirmations)
     correct = sum(item.outcome == "correct" for item in confirmations.values())
     accuracy_bps = correct * 10_000 // count if count else 0
     return count, count >= CONFIRMATION_TARGET and accuracy_bps >= CALIBRATION_ACCURACY_BPS
-
-
-def _all_decisions(sekai: SekaiGateway, actor: str, action: str) -> tuple[sekai_pb2.Decision, ...]:
-    decisions: list[sekai_pb2.Decision] = []
-    after = -1
-    while True:
-        page = sekai.list_decisions(
-            actor=actor,
-            action=action,
-            after=after,
-            limit=DECISION_PAGE_SIZE,
-        )
-        decisions.extend(page)
-        if len(page) < DECISION_PAGE_SIZE:
-            return tuple(decisions)
-        next_after = max(item.timestamp for item in page)
-        if next_after <= after:
-            raise OutcomeWorkflowError("Sekai decision pagination did not advance")
-        after = next_after
 
 
 def _disposition(confidence_bps: int, calibrated: bool) -> str:
@@ -461,6 +467,11 @@ def _decode_classification(decision: sekai_pb2.Decision) -> ReplyClassification:
 
 def _decision_id(kind: str, target: str) -> str:
     return f"hibiki-{kind}-{hashlib.sha256(target.encode()).hexdigest()[:24]}"
+
+
+def _scoped_action(action: str, publication_external_id: str) -> str:
+    digest = hashlib.sha256(publication_external_id.encode()).hexdigest()[:24]
+    return f"{action}:{digest}"
 
 
 def _json_object(content: str, label: str) -> dict[str, object]:
