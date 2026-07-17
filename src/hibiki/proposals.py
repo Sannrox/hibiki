@@ -142,7 +142,7 @@ def _draft_source_locked(
         operation_id=validation.operation_id,
     )
     validation_decision_id = _validation_decision_id(
-        namespace, proposal.external_id, validation.request_id
+        namespace, proposal.external_id, proposal.draft_hash
     )
     proposal = replace(proposal, decision_ref=validation_decision_id)
     sekai.record_decision(
@@ -249,9 +249,10 @@ def _validate_proposal_edit_locked(
         expected_claims=inventory.claims,
         namespace=namespace,
     )
-    decision_id = _validation_decision_id(namespace, proposal.external_id, validation.request_id)
+    final_text_hash = sha256_text(final_text)
+    decision_id = _validation_decision_id(namespace, proposal.external_id, final_text_hash)
     outcome = "supported" if validation.valid else "unsupported"
-    evidence = _validation_evidence(validation, sha256_text(final_text))
+    evidence = _validation_evidence(validation, final_text_hash)
     evidence.update(_inventory_evidence(inventory))
     sekai.record_decision(
         sekai_pb2.Decision(
@@ -318,7 +319,10 @@ def _approve_proposal_locked(
         raise ProposalWorkflowError("only a validated drafted proposal can be approved")
     if final_text_hash != proposal.draft_hash:
         raise ProposalWorkflowError("approval hash does not match the validated final text")
-    if not proposal.decision_ref:
+    expected_validation_id = _validation_decision_id(
+        namespace, proposal.external_id, proposal.draft_hash
+    )
+    if proposal.decision_ref != expected_validation_id:
         raise ProposalWorkflowError("proposal does not reference its successful claim validation")
     validation_decision_id = proposal.decision_ref
     approval_id = _approval_id(namespace, proposal.external_id, final_text_hash)
@@ -404,11 +408,11 @@ def _migrate_legacy_source_hash(
     return repositories.sources.put(replace(source, evidence_hash=evidence_hash))
 
 
-def _validation_decision_id(namespace: str, target_id: str, request_id: str) -> str:
+def _validation_decision_id(namespace: str, target_id: str, final_text_hash: str) -> str:
     return str(
         uuid.uuid5(
             PROPOSAL_DECISION_NAMESPACE,
-            f"{namespace}:validation:{target_id}:{request_id}",
+            f"{namespace}:validation:{target_id}:{final_text_hash}",
         )
     )
 

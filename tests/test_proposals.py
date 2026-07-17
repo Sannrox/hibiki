@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from hibiki.contracts import sekai_pb2
@@ -243,6 +245,34 @@ def test_approval_rejects_hash_that_does_not_match_validated_text() -> None:
 
     with pytest.raises(ProposalWorkflowError, match="does not match"):
         approve_proposal(sekai, drafted.proposal.external_id, "0" * 64, "hibiki")
+
+
+def test_approval_rejects_unrelated_validation_reference() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    corrupted = repositories.proposals.put(
+        replace(drafted.proposal, decision_ref="unrelated-decision")
+    )
+
+    with pytest.raises(ProposalWorkflowError, match="successful claim validation"):
+        approve_proposal(sekai, corrupted.external_id, corrupted.draft_hash, "hibiki")
 
 
 @pytest.mark.parametrize("status", ["published", "rejected"])
