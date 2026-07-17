@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      # Belt and braces: hibiki also forces live writes off whenever CI=true.
+      HIBIKI_ALLOW_LIVE_WRITES: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install locked environment
+        run: uv sync --locked
+      - name: Tests
+        run: uv run pytest
+      - name: Lint
+        run: uv run ruff check .
+      - name: Generated contracts are current
+        run: uv run python scripts/generate_contracts.py --check

@@ -3,6 +3,10 @@
 The plan is ordered by contract risk. Each phase must remain independently
 testable and must not add a live X write before Phase 5.
 
+Status: all eight phases are implemented and covered by deterministic tests.
+The document remains as the record of scope and each phase's definition of
+done. The external Onmyoji integration at the end is still pending.
+
 ## Phase 1: Python CLI and contract generation
 
 - Initialize the `uv` package and a small command dispatcher.
