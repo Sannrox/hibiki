@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -453,7 +454,10 @@ def _lock_descriptor(descriptor: int) -> None:
             os.lseek(descriptor, 0, os.SEEK_SET)
             msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
             return
-        except OSError:
+        except OSError as error:
+            winerror = getattr(error, "winerror", None)
+            if error.errno not in {errno.EACCES, errno.EAGAIN} and winerror not in {33, 36}:
+                raise
             time.sleep(0.05)
 
 
