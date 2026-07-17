@@ -49,6 +49,7 @@ def setup_publication(reply_count: int = 1) -> tuple[FakeSekaiGateway, Publicati
             submission_id=f"reply-submission-{index}",
             source_record_id=f"reply-{index}",
             source_version="1",
+            observed_at=10,
         )
     return sekai, publication
 
@@ -274,7 +275,6 @@ def test_preliminary_report_excludes_replies_after_its_fixed_window() -> None:
         )
     )
     classify_replies(sekai, chisei, publication.external_id, "hibiki")
-    confirm_classification(sekai, "reply-submission-0", "potential_user")
 
     report = build_outcome_report(sekai, chisei, publication.external_id, "24h", "hibiki")
 
@@ -282,6 +282,56 @@ def test_preliminary_report_excludes_replies_after_its_fixed_window() -> None:
     assert report.outcome.qualified_replies == 0
     assert report.classifications == ()
     assert report.lineage["reply_submission_ids"] == []
+
+
+def test_report_requires_the_supported_complete_snapshot_marker() -> None:
+    sekai, publication = setup_publication(0)
+    add_submission(
+        sekai,
+        publication,
+        evidence_type=SNAPSHOT_TYPE,
+        submission_id="snapshot-partial",
+        source_record_id=publication.post_id,
+        source_version="7d:partial",
+    )
+
+    with pytest.raises(OutcomeWorkflowError, match="complete 7d snapshot"):
+        build_outcome_report(
+            sekai, FakeChiseiGateway("{}"), publication.external_id, "7d", "hibiki"
+        )
+
+
+def test_report_validates_lineage_before_persisting_an_outcome() -> None:
+    sekai, publication = setup_publication(0)
+    add_submission(
+        sekai,
+        publication,
+        evidence_type=SNAPSHOT_TYPE,
+        submission_id="snapshot-7d",
+        source_record_id=publication.post_id,
+        source_version="7d:complete-v2",
+    )
+    proposal_id = next(
+        object_id for object_id, item in sekai.objects.items() if item.kind == "hibiki.proposal"
+    )
+    del sekai.objects[proposal_id]
+
+    with pytest.raises(OutcomeWorkflowError, match="proposal record was not found"):
+        build_outcome_report(
+            sekai, FakeChiseiGateway("{}"), publication.external_id, "7d", "hibiki"
+        )
+
+    assert all(item.kind != "hibiki.outcome" for item in sekai.objects.values())
+
+
+def test_classification_rejects_malformed_operation_receipt() -> None:
+    sekai, publication = setup_publication()
+    chisei = FakeChiseiGateway(classification_payload(1), receipt_json="truncated")
+
+    with pytest.raises(OutcomeWorkflowError, match="receipt response is not valid JSON"):
+        classify_replies(sekai, chisei, publication.external_id, "hibiki")
+
+    assert not sekai.decisions
 
 
 def test_every_documented_category_is_accepted() -> None:

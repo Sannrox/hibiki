@@ -184,19 +184,28 @@ def build_outcome_report(
     snapshots = tuple(
         item
         for item in _submissions(sekai, publication.external_id, SNAPSHOT_TYPE)
-        if item.source_version.startswith(f"{window}:")
+        if item.source_version == f"{window}:complete-v2"
     )
     if len(snapshots) != 1:
         raise OutcomeWorkflowError(f"exactly one complete {window} snapshot is required")
     classification_result = classify_replies(
         sekai, chisei, publication.external_id, namespace, clock_ms=clock_ms
     )
+    replies_by_id = {
+        item.id: item for item in _submissions(sekai, publication.external_id, REPLY_TYPE)
+    }
+    window_end = publication.attempted_at + (86_400_000 if window == "24h" else 604_800_000)
+    window_classifications = tuple(
+        item
+        for item in classification_result.classifications
+        if replies_by_id[item.submission_id].observed_at_ms <= window_end
+    )
     confirmed = _latest_by_target(
         sekai.list_decisions(actor="operator", action=CONFIRMATION_ACTION, limit=1000)
     )
     unresolved = tuple(
         item
-        for item in classification_result.classifications
+        for item in window_classifications
         if item.disposition == "confirmation_required" and item.submission_id not in confirmed
     )
     if unresolved:
@@ -207,17 +216,13 @@ def build_outcome_report(
         item.submission_id: confirmed[item.submission_id].evidence["confirmed_category"]
         if item.submission_id in confirmed
         else item.category
-        for item in classification_result.classifications
+        for item in window_classifications
     }
-    replies_by_id = {
-        item.id: item for item in _submissions(sekai, publication.external_id, REPLY_TYPE)
-    }
-    window_end = publication.attempted_at + (86_400_000 if window == "24h" else 604_800_000)
-    window_classifications = tuple(
-        item
-        for item in classification_result.classifications
-        if replies_by_id[item.submission_id].observed_at_ms <= window_end
+    proposal = CausalRepositories.create(sekai, namespace).proposals.get_external(
+        publication.proposal_external_id
     )
+    if proposal is None:
+        raise OutcomeWorkflowError("publication proposal record was not found")
     metrics = _execute_metrics(chisei, snapshots[0], namespace)
     qualified = sum(
         categories[item.submission_id] in QUALIFIED_CATEGORIES for item in window_classifications
@@ -233,11 +238,6 @@ def build_outcome_report(
             qualified_replies=qualified,
         )
     )
-    proposal = CausalRepositories.create(sekai, namespace).proposals.get_external(
-        publication.proposal_external_id
-    )
-    if proposal is None:
-        raise OutcomeWorkflowError("publication proposal record was not found")
     return OutcomeReport(
         outcome=outcome,
         status="preliminary" if window == "24h" else "final",
@@ -380,6 +380,7 @@ def _execute(
     )
     if not receipt.receipt_json:
         raise OutcomeWorkflowError("Chisei returned no operation receipt")
+    _json_object(receipt.receipt_json, "operation receipt")
     return executed.response.content, plan.plan_id
 
 
