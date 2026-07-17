@@ -126,6 +126,27 @@ def test_registers_a_narrow_birdclaw_producer_and_versioned_schemas() -> None:
     ]
 
 
+def test_registration_versions_each_reconciliation_and_applies_runtime_changes() -> None:
+    gateway = FakeSekaiGateway()
+
+    register_evidence_contracts(gateway, "hibiki", "builder")
+    register_evidence_contracts(gateway, "hibiki", "builder")
+    register_evidence_contracts(gateway, "hibiki", "different-account")
+
+    assert [item.config_version for item in gateway.evidence_producers] == [1, 2, 3]
+    assert [tuple(item.source_instances) for item in gateway.evidence_producers] == [
+        ("builder",),
+        ("builder",),
+        ("different-account",),
+    ]
+    registration_decisions = [
+        decision
+        for decision in gateway.decisions.values()
+        if decision.action == "hibiki.evidence_contract_registered"
+    ]
+    assert len(registration_decisions) == 3
+
+
 def test_collects_raw_snapshot_and_replies_onto_the_publication() -> None:
     gateway = FakeSekaiGateway()
     publication = _posted_publication(gateway)
@@ -214,6 +235,37 @@ def test_duplicate_collection_reuses_snapshot_and_reply_submissions() -> None:
     assert second.calls[0][0][1:3] == ("sync", "mentions")
 
 
+def test_late_retry_returns_prior_submissions_without_relabeling_current_metrics() -> None:
+    gateway = FakeSekaiGateway()
+    publication = _posted_publication(gateway)
+    first = SequenceRunner([_json_result(_authored_payload()), _json_result(_mentions_payload())])
+    collect_publication_evidence(
+        first,
+        gateway,
+        publication.external_id,
+        "builder",
+        "hibiki",
+        "7d",
+        clock_ms=lambda: NOW_MS,
+    )
+    retry = SequenceRunner([])
+
+    result = collect_publication_evidence(
+        retry,
+        gateway,
+        publication.external_id,
+        "builder",
+        "hibiki",
+        "7d",
+        clock_ms=lambda: NOW_MS + 2 * 24 * 60 * 60 * 1000,
+    )
+
+    assert result.snapshot_deduplicated is True
+    assert result.replies_deduplicated == 1
+    assert retry.calls == []
+    assert len(gateway.evidence_envelopes) == 2
+
+
 def test_rejects_partial_birdclaw_data_without_submitting_evidence() -> None:
     gateway = FakeSekaiGateway()
     publication = _posted_publication(gateway)
@@ -222,6 +274,28 @@ def test_rejects_partial_birdclaw_data_without_submitting_evidence() -> None:
     with pytest.raises(EvidenceWorkflowError, match="incomplete result"):
         collect_publication_evidence(
             SequenceRunner([_json_result(partial, returncode=5)]),
+            gateway,
+            publication.external_id,
+            "builder",
+            "hibiki",
+            "7d",
+            clock_ms=lambda: NOW_MS,
+        )
+
+    assert gateway.evidence_envelopes == []
+
+
+def test_validates_reply_collection_before_submitting_the_snapshot() -> None:
+    gateway = FakeSekaiGateway()
+    publication = _posted_publication(gateway)
+    partial_mentions = _mentions_payload() | {"ok": False, "partial": True}
+    runner = SequenceRunner(
+        [_json_result(_authored_payload()), _json_result(partial_mentions, returncode=5)]
+    )
+
+    with pytest.raises(EvidenceWorkflowError, match="reply collection failed"):
+        collect_publication_evidence(
+            runner,
             gateway,
             publication.external_id,
             "builder",
@@ -246,4 +320,20 @@ def test_refuses_collection_before_the_requested_window() -> None:
             "hibiki",
             "24h",
             clock_ms=lambda: ATTEMPTED_AT + 1,
+        )
+
+
+def test_refuses_to_mislabel_a_late_observation_as_a_fixed_window() -> None:
+    gateway = FakeSekaiGateway()
+    publication = _posted_publication(gateway)
+
+    with pytest.raises(EvidenceWorkflowError, match="24h evidence window has expired"):
+        collect_publication_evidence(
+            SequenceRunner([]),
+            gateway,
+            publication.external_id,
+            "builder",
+            "hibiki",
+            "24h",
+            clock_ms=lambda: ATTEMPTED_AT + 2 * 24 * 60 * 60 * 1000,
         )

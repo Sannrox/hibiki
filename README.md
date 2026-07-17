@@ -129,4 +129,7 @@ uv run hibiki collect \
 Collection is read-only with respect to X. Hibiki accepts only complete raw
 BirdClaw sync payloads, projects every envelope onto the publication record,
 and reuses prior snapshot and reply submissions on repeated collection. The
-generated BirdClaw digest is never invoked or admitted as source evidence.
+24-hour observation must run within six hours of its boundary; the seven-day
+observation has a one-day tolerance, so late cumulative metrics cannot be
+mislabelled as fixed-window results. The generated BirdClaw digest is never
+invoked or admitted as source evidence.

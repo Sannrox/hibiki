@@ -118,7 +118,7 @@ def run(
             evidence = register_evidence_contracts(
                 gateway, settings.namespace, settings.birdclaw_account
             )
-        except (SchemaConflictError, grpc.RpcError) as error:
+        except (SchemaConflictError, EvidenceWorkflowError, grpc.RpcError) as error:
             _emit_error(stdout, command, "schema_registration_failed", str(error))
             print(f"hibiki: schema registration failed: {error}", file=stderr)
             return 1
