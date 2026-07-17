@@ -293,9 +293,29 @@ def require_current_approval(
         return proposal.decision_ref
     # Before approval IDs were stored on proposals, the approval decision was
     # recorded first and the approved record retained its validation reference.
+    # Sekai has no direct decision lookup, so only this legacy path exhaustively
+    # scans approval decisions instead of relying on a lossy recent window.
     if not proposal.decision_ref:
         raise ProposalWorkflowError("proposal approval is stale or absent for the final text")
-    return expected_approval_id
+    legacy_approval = next(
+        (
+            decision
+            for decision in sekai.list_decisions(
+                actor="hibiki",
+                action="hibiki.proposal_approval",
+                limit=2_147_483_647,
+            )
+            if decision.id == expected_approval_id
+            and decision.target_id == proposal.external_id
+            and decision.outcome == "approved"
+            and decision.evidence.get("final_text_hash") == proposal.draft_hash
+            and decision.evidence.get("validation_decision_id") == proposal.decision_ref
+        ),
+        None,
+    )
+    if legacy_approval is None:
+        raise ProposalWorkflowError("proposal approval is stale or absent for the final text")
+    return legacy_approval.id
 
 
 def _draft_evidence(drafted: DraftResult, evidence_hash: str) -> dict[str, str]:
