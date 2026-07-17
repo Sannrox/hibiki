@@ -15,6 +15,7 @@ from hibiki.sekai import SekaiGateway
 BIRDCLAW_TIMEOUT_SECONDS = 30.0
 AUTHORED_LOOKBACK = timedelta(minutes=5)
 X_SNOWFLAKE_EPOCH_MS = 1_288_834_974_657
+MAX_SAFE_X_TEXT_WEIGHT = 280
 
 
 class PublicationWorkflowError(RuntimeError):
@@ -58,6 +59,7 @@ def publish_proposal(
                 proposal = _mark_proposal_published(repositories, proposal)
                 return PublicationResult(proposal, publication, True)
             if publication.status in {"intent", "uncertain"}:
+                _require_matching_completed_publication(publication, proposal)
                 return _reconcile_prior_attempt(
                     process_runner,
                     repositories,
@@ -69,6 +71,10 @@ def publish_proposal(
             approval_id = require_current_approval(sekai, proposal, proposal.draft)
         except ProposalWorkflowError as error:
             raise PublicationWorkflowError(str(error)) from error
+        if _safe_x_text_weight(proposal.draft) > MAX_SAFE_X_TEXT_WEIGHT:
+            raise PublicationWorkflowError(
+                "final text exceeds Hibiki's safe 280-character X publication limit"
+            )
 
         now_ms = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
         intent = PublicationRecord(
@@ -220,10 +226,12 @@ def _authored_snowflake_window(attempted_at: int) -> tuple[str, str]:
 
 
 def _canonical_post_text(post: dict[object, object]) -> str:
-    text = post.get("text")
+    note_tweet = post.get("note_tweet")
+    content = note_tweet if isinstance(note_tweet, dict) else post
+    text = content.get("text")
     if not isinstance(text, str):
         raise PublicationWorkflowError("BirdClaw authored post has no text")
-    entities = post.get("entities")
+    entities = content.get("entities")
     if not isinstance(entities, dict):
         return text
     urls = entities.get("urls")
@@ -237,6 +245,10 @@ def _canonical_post_text(post: dict[object, object]) -> str:
         if isinstance(short, str) and isinstance(expanded, str):
             text = text.replace(short, expanded)
     return text
+
+
+def _safe_x_text_weight(text: str) -> int:
+    return sum(1 if ord(character) <= 0x7F else 2 for character in text)
 
 
 def _run_json_object(

@@ -236,6 +236,22 @@ def test_live_write_guard_fails_before_intent_or_birdclaw_call() -> None:
     assert runner.calls == []
 
 
+def test_long_form_text_is_rejected_before_intent_or_birdclaw_call() -> None:
+    sekai = FakeSekaiGateway()
+    proposal = _approved_edited_proposal(
+        sekai,
+        _approved_proposal(sekai),
+        "x" * 281,
+    )
+    runner = BirdClawRunner([])
+
+    with pytest.raises(PublicationWorkflowError, match="safe 280-character"):
+        _publish(runner, sekai, proposal)
+
+    assert CausalRepositories.create(sekai, "hibiki").publications.get(proposal.stable_id) is None
+    assert runner.calls == []
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)
@@ -342,6 +358,28 @@ def test_completed_publication_cannot_be_attached_to_different_approved_text() -
             proposal.draft + " Edited.",
             "hibiki",
         )
+
+
+def test_stale_uncertain_intent_is_not_persisted_as_posted() -> None:
+    sekai = FakeSekaiGateway()
+    proposal = _approved_proposal(sekai)
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    stale = repositories.publications.put(
+        PublicationRecord(
+            stable_id=proposal.stable_id,
+            proposal_external_id=proposal.external_id,
+            final_text=proposal.draft + " Stale.",
+            target_account="builder",
+            attempted_at=ATTEMPTED_AT,
+            status="uncertain",
+            approval_id=proposal.decision_ref,
+        )
+    )
+
+    with pytest.raises(PublicationWorkflowError, match="does not match"):
+        _publish(BirdClawRunner([]), sekai, proposal)
+
+    assert repositories.publications.get(proposal.stable_id) == stale
 
 
 def test_published_result_is_idempotent_without_birdclaw_call() -> None:
