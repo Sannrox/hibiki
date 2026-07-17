@@ -351,6 +351,7 @@ def _linkified_url_component_mask(
     valid_path: re.Pattern[str],
 ) -> bytearray:
     components = bytearray(len(text))
+    repeated_valid_path = re.compile(f"(?:{valid_path.pattern})*", valid_path.flags)
     for match in matches:
         if match.schema in {"http:", "https:"}:
             query_offset = match.raw.find("?")
@@ -366,7 +367,7 @@ def _linkified_url_component_mask(
             if path_start != -1:
                 path = match.raw[path_start + 1 : raw_path_end]
                 for balanced in balanced_parens.finditer(path):
-                    if not valid_path.fullmatch(path[: balanced.end()]):
+                    if not repeated_valid_path.fullmatch(path[: balanced.end()]):
                         continue
                     lower = match.index + path_start + 1 + balanced.start()
                     upper = match.index + path_start + 1 + balanced.end()
