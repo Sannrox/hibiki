@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import tempfile
@@ -9,6 +8,11 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from hibiki.boundaries import ProcessRunner
 from hibiki.chisei import ChiseiGateway
@@ -428,13 +432,37 @@ def _proposal_external_id_for_source(source_external_id: str, namespace: str) ->
 def _proposal_lock(proposal_external_id: str) -> Iterator[None]:
     lock_name = f"hibiki-proposal-{sha256_text(proposal_external_id)}.lock"
     lock_path = os.path.join(tempfile.gettempdir(), lock_name)
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _lock_descriptor(descriptor)
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        _unlock_descriptor(descriptor)
         os.close(descriptor)
+
+
+def _lock_descriptor(descriptor: int) -> None:
+    if os.name != "nt":
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return
+    if os.fstat(descriptor).st_size == 0:
+        os.write(descriptor, b"\0")
+    while True:
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            time.sleep(0.05)
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name != "nt":
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
 
 
 def _validation_evidence(validation: ValidationResult, text_hash: str) -> dict[str, str]:
