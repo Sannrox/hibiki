@@ -14,7 +14,12 @@ from hibiki.drafting import DraftClaim, DraftResult, SourceReference, generate_d
 from hibiki.records import CausalRepositories, ProposalRecord, SourceRecord, sha256_text
 from hibiki.sekai import SekaiGateway
 from hibiki.selection import commit_evidence_hash, legacy_commit_evidence_hash
-from hibiki.validation import ValidationResult, validate_claims
+from hibiki.validation import (
+    ClaimInventoryResult,
+    ValidationResult,
+    inventory_claims,
+    validate_claims,
+)
 
 PROPOSAL_DECISION_NAMESPACE = uuid.UUID("36937fca-08bd-4f67-a62d-56eecdb0d9f5")
 
@@ -32,6 +37,21 @@ class DraftedProposal:
     operation_id: str
     receipt_complete: bool
     missing_surfaces: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EditedProposalValidation:
+    proposal: ProposalRecord
+    validation: ValidationResult
+    validation_decision_id: str
+    persisted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalApproval:
+    proposal: ProposalRecord
+    approval_id: str
+    validation_decision_id: str
 
 
 def draft_source(
@@ -100,7 +120,7 @@ def draft_source(
     )
     sekai.record_decision(
         sekai_pb2.Decision(
-            id=_validation_decision_id(namespace, source.external_id, validation.request_id),
+            id=_validation_decision_id(namespace, proposal.external_id, validation.request_id),
             timestamp=now_ms,
             actor="hibiki",
             action="hibiki.claim_validation",
@@ -119,6 +139,163 @@ def draft_source(
         receipt_complete=drafted.receipt_complete,
         missing_surfaces=drafted.missing_surfaces,
     )
+
+
+def validate_proposal_edit(
+    process_runner: ProcessRunner,
+    sekai: SekaiGateway,
+    chisei: ChiseiGateway,
+    proposal_external_id: str,
+    final_text: str,
+    namespace: str,
+    *,
+    limits: DiscoveryLimits | None = None,
+    clock_ms: Callable[[], int] | None = None,
+) -> EditedProposalValidation:
+    now_ms = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
+    repositories = CausalRepositories.create(sekai, namespace, clock_ms=lambda: now_ms)
+    proposal = repositories.proposals.get_external(proposal_external_id)
+    if proposal is None:
+        raise ProposalWorkflowError(f"proposal not found: {proposal_external_id}")
+    if not final_text.strip():
+        raise ProposalWorkflowError("final text must be a non-empty string")
+
+    edited = final_text != proposal.draft
+    if edited and proposal.status == "approved":
+        proposal = repositories.proposals.put(proposal.with_status("invalidated"))
+
+    source = repositories.sources.get_external(proposal.source_external_id)
+    if source is None:
+        raise ProposalWorkflowError(f"source not found: {proposal.source_external_id}")
+    bundle = discover_public_revision(
+        process_runner, source.repository, source.revision, limits=limits
+    )
+    evidence_hash = commit_evidence_hash(bundle, source.revision)
+    if evidence_hash != source.evidence_hash:
+        source = _migrate_legacy_source_hash(sekai, repositories, source, bundle, evidence_hash)
+    if proposal.evidence_hash != source.evidence_hash:
+        proposal = repositories.proposals.put(replace(proposal, evidence_hash=source.evidence_hash))
+
+    inventory = inventory_claims(chisei, final_text, bundle, namespace=namespace)
+    validation = validate_claims(
+        chisei,
+        final_text,
+        bundle,
+        expected_claims=inventory.claims,
+        namespace=namespace,
+    )
+    decision_id = _validation_decision_id(namespace, proposal.external_id, validation.request_id)
+    outcome = "supported" if validation.valid else "unsupported"
+    evidence = _validation_evidence(validation, sha256_text(final_text))
+    evidence.update(_inventory_evidence(inventory))
+    sekai.record_decision(
+        sekai_pb2.Decision(
+            id=decision_id,
+            timestamp=now_ms,
+            actor="hibiki",
+            action="hibiki.claim_validation",
+            reason=validation.reasoning,
+            evidence=evidence,
+            target_id=proposal.external_id,
+            outcome=outcome,
+        )
+    )
+    if not validation.valid:
+        if proposal.status != "invalidated":
+            proposal = repositories.proposals.put(proposal.with_status("invalidated"))
+        return EditedProposalValidation(proposal, validation, decision_id, False)
+
+    if edited or proposal.status != "approved":
+        proposal = repositories.proposals.put(
+            replace(
+                proposal,
+                draft=final_text,
+                status="drafted",
+                decision_ref=decision_id,
+                operation_id=validation.operation_id,
+            )
+        )
+    return EditedProposalValidation(proposal, validation, decision_id, True)
+
+
+def approve_proposal(
+    sekai: SekaiGateway,
+    proposal_external_id: str,
+    final_text_hash: str,
+    namespace: str,
+    *,
+    clock_ms: Callable[[], int] | None = None,
+) -> ProposalApproval:
+    now_ms = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
+    repositories = CausalRepositories.create(sekai, namespace, clock_ms=lambda: now_ms)
+    proposal = repositories.proposals.get_external(proposal_external_id)
+    if proposal is None:
+        raise ProposalWorkflowError(f"proposal not found: {proposal_external_id}")
+    if proposal.status != "drafted":
+        raise ProposalWorkflowError("only a validated drafted proposal can be approved")
+    if final_text_hash != proposal.draft_hash:
+        raise ProposalWorkflowError("approval hash does not match the validated final text")
+    validation = next(
+        (
+            decision
+            for decision in sekai.list_decisions(
+                actor="hibiki", action="hibiki.claim_validation", limit=100
+            )
+            if decision.target_id == proposal.external_id
+            and decision.outcome == "supported"
+            and decision.evidence.get("final_text_hash") == final_text_hash
+        ),
+        None,
+    )
+    if validation is None:
+        raise ProposalWorkflowError("no successful claim validation exists for the final text")
+    approval_id = str(
+        uuid.uuid5(
+            PROPOSAL_DECISION_NAMESPACE,
+            f"{namespace}:approval:{proposal.external_id}:{final_text_hash}",
+        )
+    )
+    sekai.record_decision(
+        sekai_pb2.Decision(
+            id=approval_id,
+            timestamp=now_ms,
+            actor="hibiki",
+            action="hibiki.proposal_approval",
+            reason="operator approved the exact validated final-text hash",
+            evidence={
+                "final_text_hash": final_text_hash,
+                "validation_decision_id": validation.id,
+            },
+            target_id=proposal.external_id,
+            outcome="approved",
+        )
+    )
+    approved = repositories.proposals.put(proposal.with_status("approved"))
+    return ProposalApproval(approved, approval_id, validation.id)
+
+
+def require_current_approval(
+    sekai: SekaiGateway,
+    proposal: ProposalRecord,
+    final_text: str,
+) -> str:
+    if proposal.status != "approved" or sha256_text(final_text) != proposal.draft_hash:
+        raise ProposalWorkflowError("proposal approval is stale or absent for the final text")
+    approval = next(
+        (
+            decision
+            for decision in sekai.list_decisions(
+                actor="hibiki", action="hibiki.proposal_approval", limit=100
+            )
+            if decision.target_id == proposal.external_id
+            and decision.outcome == "approved"
+            and decision.evidence.get("final_text_hash") == proposal.draft_hash
+        ),
+        None,
+    )
+    if approval is None:
+        raise ProposalWorkflowError("proposal approval is stale or absent for the final text")
+    return approval.id
 
 
 def _draft_evidence(drafted: DraftResult, evidence_hash: str) -> dict[str, str]:
@@ -201,4 +378,20 @@ def _validation_evidence(validation: ValidationResult, text_hash: str) -> dict[s
         "receipt_json": validation.receipt_json,
         "receipt_complete": str(validation.receipt_complete).lower(),
         "missing_surfaces": json.dumps(list(validation.missing_surfaces), separators=(",", ":")),
+    }
+
+
+def _inventory_evidence(inventory: ClaimInventoryResult) -> dict[str, str]:
+    return {
+        "inventory_claims": json.dumps(
+            list(inventory.claims), ensure_ascii=False, separators=(",", ":")
+        ),
+        "inventory_operation_id": inventory.operation_id,
+        "inventory_provider": inventory.provider,
+        "inventory_model": inventory.model,
+        "inventory_receipt_json": inventory.receipt_json,
+        "inventory_receipt_complete": str(inventory.receipt_complete).lower(),
+        "inventory_missing_surfaces": json.dumps(
+            list(inventory.missing_surfaces), separators=(",", ":")
+        ),
     }

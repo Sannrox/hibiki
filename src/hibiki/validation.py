@@ -38,6 +38,89 @@ class ValidationResult:
     missing_surfaces: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimInventoryResult:
+    claims: tuple[str, ...]
+    operation_id: str
+    request_id: str
+    provider: str
+    model: str
+    receipt_json: str
+    receipt_complete: bool
+    missing_surfaces: tuple[str, ...]
+
+
+def inventory_claims(
+    gateway: ChiseiGateway,
+    text: str,
+    bundle: EvidenceBundle,
+    *,
+    namespace: str = "hibiki",
+) -> ClaimInventoryResult:
+    if not text.strip():
+        raise ClaimValidationError("final text must be a non-empty string")
+    if len(bundle.commits) != 1:
+        raise ClaimValidationError("claim inventory requires exactly one evidence revision")
+    text_hash = hashlib.sha256(text.encode()).hexdigest()
+    request_id = f"hibiki-claim-inventory-{text_hash[:24]}-{bundle.content_hash[:12]}"
+    plan = gateway.plan_execution(
+        chisei_pb2.PlanExecutionRequest(
+            input=chisei_pb2.ExecutionInput(
+                request_id=request_id,
+                namespace=namespace,
+                spec=json.dumps(
+                    {
+                        "task": "Inventory every factual claim in final_text.",
+                        "final_text": text,
+                        "response_schema": {"claims": ["exact non-empty factual claim substring"]},
+                        "requirements": [
+                            "include every factual claim exactly once",
+                            "copy each claim verbatim from final_text",
+                            "do not judge support in this inventory step",
+                        ],
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                task_type="factual_claim_inventory",
+                task_class="public_content_validation",
+                max_tokens=750,
+                messages=(
+                    chisei_pb2.ChatMessage(
+                        role="user", content="Inventory every factual claim in the final text."
+                    ),
+                ),
+                system=(
+                    "Return only the JSON object required by the supplied specification. "
+                    "Do not validate or omit claims."
+                ),
+            )
+        )
+    )
+    if not plan.plan_id:
+        raise ClaimValidationError("Chisei returned an inventory plan without an operation ID")
+    if not plan.executable or not plan.budget.allowed:
+        reason = plan.budget.reason or ", ".join(plan.warnings) or "plan is not executable"
+        raise ClaimValidationError(f"Chisei rejected inventory plan: {reason}")
+    executed = gateway.execute_plan(plan)
+    claims = _parse_inventory(executed.response.content, text)
+    receipt = gateway.get_operation_receipt(
+        chisei_pb2.GetOperationReceiptRequest(operation_id=plan.plan_id)
+    )
+    _validate_receipt(receipt.receipt_json)
+    return ClaimInventoryResult(
+        claims=claims,
+        operation_id=plan.plan_id,
+        request_id=request_id,
+        provider=executed.response.provider,
+        model=plan.resolved_model,
+        receipt_json=receipt.receipt_json,
+        receipt_complete=receipt.complete,
+        missing_surfaces=tuple(receipt.missing_surfaces),
+    )
+
+
 def validate_claims(
     gateway: ChiseiGateway,
     text: str,
@@ -253,6 +336,24 @@ def _validate_receipt(receipt_json: str) -> None:
         raise ClaimValidationError("Chisei returned an invalid operation receipt") from error
     if not isinstance(parsed, dict):
         raise ClaimValidationError("Chisei operation receipt must be a JSON object")
+
+
+def _parse_inventory(content: str, text: str) -> tuple[str, ...]:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise ClaimValidationError("Chisei claim inventory is not valid JSON") from error
+    if not isinstance(payload, dict) or set(payload) != {"claims"}:
+        raise ClaimValidationError("Chisei claim inventory has unexpected or missing fields")
+    raw_claims = payload["claims"]
+    if not isinstance(raw_claims, list) or not raw_claims:
+        raise ClaimValidationError("Chisei claim inventory must be a non-empty list")
+    claims = tuple(_nonempty_string(claim, "inventoried claim") for claim in raw_claims)
+    if any(claim not in text for claim in claims):
+        raise ClaimValidationError("inventoried claims must appear verbatim in final text")
+    if len(set(claims)) != len(claims):
+        raise ClaimValidationError("Chisei claim inventory contains a duplicate claim")
+    return claims
 
 
 def _nonempty_string(value: Any, name: str) -> str:

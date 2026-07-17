@@ -5,7 +5,7 @@ import json
 import pytest
 
 from hibiki.discovery import discover_public_revision
-from hibiki.validation import ClaimValidationError, validate_claims
+from hibiki.validation import ClaimValidationError, inventory_claims, validate_claims
 from tests.fakes import FakeChiseiGateway
 from tests.test_discovery import fixture_runner
 
@@ -37,6 +37,10 @@ def validation_response(
     )
 
 
+def inventory_response(*claims: str) -> str:
+    return json.dumps({"claims": list(claims or (FINAL_TEXT,))})
+
+
 def test_claim_validation_returns_strict_supported_verdict() -> None:
     bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
 
@@ -50,6 +54,16 @@ def test_claim_validation_returns_strict_supported_verdict() -> None:
     assert result.valid is True
     assert result.claims[0].text == FINAL_TEXT
     assert result.claims[0].source_references[0].path == "src/retry.py"
+
+
+def test_claim_inventory_returns_verbatim_unique_claims() -> None:
+    result = inventory_claims(
+        FakeChiseiGateway(inventory_response()),
+        FINAL_TEXT,
+        discover_public_revision(fixture_runner(), "example/tenkai", "abc123"),
+    )
+
+    assert result.claims == (FINAL_TEXT,)
 
 
 def test_claim_validation_rejects_claim_absent_from_final_text() -> None:

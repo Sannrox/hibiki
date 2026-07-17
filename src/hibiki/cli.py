@@ -19,15 +19,23 @@ from hibiki.config import ConfigurationError, Settings
 from hibiki.discovery import DiscoveryError
 from hibiki.drafting import DraftingError
 from hibiki.health import Check, run_health_checks, serialize_checks
-from hibiki.proposals import ProposalWorkflowError, draft_source
+from hibiki.proposals import (
+    ProposalWorkflowError,
+    approve_proposal,
+    draft_source,
+    validate_proposal_edit,
+)
 from hibiki.recommendation import recommend_source
-from hibiki.records import RecordConflictError, RecordValidationError
+from hibiki.records import RecordConflictError, RecordValidationError, sha256_text
 from hibiki.schema import SchemaConflictError, register_schema_types
 from hibiki.sekai import NativeSekaiGateway, SekaiGateway
 from hibiki.selection import SelectionError
 from hibiki.validation import ClaimValidationError
 
-USAGE = "usage: hibiki <health|config|schema|recommend|draft SOURCE_ID> [--timeout SECONDS]"
+USAGE = (
+    "usage: hibiki <health|config|schema|recommend|draft SOURCE_ID|"
+    "validate PROPOSAL_ID|approve PROPOSAL_ID> [--timeout SECONDS]"
+)
 
 
 def run(
@@ -36,6 +44,7 @@ def run(
     environ: Mapping[str, str],
     stdout: TextIO,
     stderr: TextIO,
+    stdin: TextIO,
     process_runner: ProcessRunner,
     grpc_probe: GrpcHealthProbe,
     sekai_gateway: SekaiGateway | None = None,
@@ -51,12 +60,22 @@ def run(
     except ValueError as error:
         return _usage_error(stdout, stderr, str(error))
 
-    if command not in {"health", "config", "schema", "recommend", "draft"}:
+    if command not in {
+        "health",
+        "config",
+        "schema",
+        "recommend",
+        "draft",
+        "validate",
+        "approve",
+    }:
         return _usage_error(stdout, stderr, f"unknown command: {command}")
     if command in {"config", "schema", "recommend"} and len(argv) != 1:
         return _usage_error(stdout, stderr, f"{command} does not accept arguments")
     if command == "draft" and len(argv) != 2:
         return _usage_error(stdout, stderr, "draft requires SOURCE_ID")
+    if command in {"validate", "approve"} and len(argv) != 2:
+        return _usage_error(stdout, stderr, f"{command} requires PROPOSAL_ID")
 
     try:
         settings = Settings.from_environ(environ)
@@ -204,6 +223,97 @@ def run(
         )
         return 0
 
+    if command == "validate":
+        try:
+            request = _read_request(stdin, required={"final_text"})
+        except ValueError as error:
+            return _usage_error(stdout, stderr, str(error))
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        chisei = chisei_gateway or NativeChiseiGateway(settings.chisei_target)
+        try:
+            result = validate_proposal_edit(
+                process_runner,
+                sekai,
+                chisei,
+                argv[1],
+                request["final_text"],
+                settings.namespace,
+            )
+        except (
+            DiscoveryError,
+            ClaimValidationError,
+            ProposalWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "validation_failed", str(error))
+            print(f"hibiki: validation failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": result.validation.valid,
+                "proposal_external_id": result.proposal.external_id,
+                "final_text_hash": sha256_text(request["final_text"]),
+                "status": result.proposal.status,
+                "persisted": result.persisted,
+                "reasoning": result.validation.reasoning,
+                "claims": [
+                    {
+                        "text": claim.text,
+                        "supported": claim.supported,
+                        "reason": claim.reason,
+                        "source_references": [
+                            {"revision": reference.revision, "path": reference.path}
+                            for reference in claim.source_references
+                        ],
+                    }
+                    for claim in result.validation.claims
+                ],
+                "undeclared_claims": result.validation.undeclared_claims,
+                "validation_decision_id": result.validation_decision_id,
+            },
+        )
+        return 0 if result.validation.valid else 1
+
+    if command == "approve":
+        try:
+            request = _read_request(stdin, required={"final_text_hash"})
+        except ValueError as error:
+            return _usage_error(stdout, stderr, str(error))
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        try:
+            result = approve_proposal(
+                sekai,
+                argv[1],
+                request["final_text_hash"],
+                settings.namespace,
+            )
+        except (
+            ProposalWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "approval_failed", str(error))
+            print(f"hibiki: approval failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "proposal_external_id": result.proposal.external_id,
+                "final_text_hash": result.proposal.draft_hash,
+                "status": result.proposal.status,
+                "approval_id": result.approval_id,
+                "validation_decision_id": result.validation_decision_id,
+            },
+        )
+        return 0
+
     checks = run_health_checks(settings, process_runner, grpc_probe, timeout or 3.0)
     ok = all(check.ok for check in checks)
     _emit(stdout, {"command": command, "ok": ok, "checks": serialize_checks(checks)})
@@ -218,6 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         environ=os.environ,
         stdout=sys.stdout,
         stderr=sys.stderr,
+        stdin=sys.stdin,
         process_runner=SubprocessRunner(),
         grpc_probe=NativeGrpcHealthProbe(),
     )
@@ -250,3 +361,15 @@ def _emit_error(stdout: TextIO, command: str, code: str, message: str) -> None:
 def _emit(stdout: TextIO, payload: object) -> None:
     json.dump(payload, stdout, sort_keys=True, separators=(",", ":"))
     stdout.write("\n")
+
+
+def _read_request(stdin: TextIO, *, required: set[str]) -> dict[str, str]:
+    try:
+        payload = json.load(stdin)
+    except json.JSONDecodeError as error:
+        raise ValueError("command input must be one JSON object on stdin") from error
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ValueError(f"command input must contain exactly: {', '.join(sorted(required))}")
+    if any(not isinstance(payload[name], str) or not payload[name].strip() for name in required):
+        raise ValueError("command input values must be non-empty strings")
+    return {name: payload[name] for name in required}

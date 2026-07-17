@@ -4,13 +4,19 @@ import pytest
 
 from hibiki.contracts import sekai_pb2
 from hibiki.discovery import discover_public_revision
-from hibiki.proposals import ProposalWorkflowError, draft_source
+from hibiki.proposals import (
+    ProposalWorkflowError,
+    approve_proposal,
+    draft_source,
+    require_current_approval,
+    validate_proposal_edit,
+)
 from hibiki.records import CausalRepositories, SourceRecord
 from hibiki.selection import commit_evidence_hash, legacy_commit_evidence_hash
 from tests.fakes import FakeChiseiGateway, FakeSekaiGateway
 from tests.test_discovery import fixture_runner
 from tests.test_drafting import draft_response
-from tests.test_validation import validation_response
+from tests.test_validation import inventory_response, validation_response
 
 
 def test_draft_source_persists_proposal_and_governed_lineage() -> None:
@@ -116,3 +122,120 @@ def test_draft_source_migrates_traceable_legacy_evidence_hash() -> None:
     migrated = repositories.sources.get(source.stable_id)
     assert migrated is not None
     assert migrated.evidence_hash == commit_evidence_hash(bundle, "abc123")
+
+
+def test_edited_text_must_validate_before_exact_hash_approval() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    edited_text = "I made retries deterministic with a stable identity for each attempt."
+
+    validated = validate_proposal_edit(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway(
+            (inventory_response(edited_text), validation_response(claim=edited_text))
+        ),
+        drafted.proposal.external_id,
+        edited_text,
+        "hibiki",
+    )
+    approved = approve_proposal(
+        sekai,
+        drafted.proposal.external_id,
+        validated.proposal.draft_hash,
+        "hibiki",
+    )
+
+    assert validated.persisted is True
+    assert validated.proposal.status == "drafted"
+    assert approved.proposal.status == "approved"
+    assert require_current_approval(sekai, approved.proposal, edited_text) == approved.approval_id
+    with pytest.raises(ProposalWorkflowError, match="stale or absent"):
+        require_current_approval(sekai, approved.proposal, edited_text + " Edited again.")
+
+
+def test_edit_invalidates_approval_even_when_new_text_is_unsupported() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    approved = approve_proposal(
+        sekai, drafted.proposal.external_id, drafted.proposal.draft_hash, "hibiki"
+    )
+    unsupported = "I guarantee retries can never fail."
+
+    result = validate_proposal_edit(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway(
+            (
+                inventory_response(unsupported),
+                validation_response(supported=False, claim=unsupported),
+            )
+        ),
+        approved.proposal.external_id,
+        unsupported,
+        "hibiki",
+    )
+
+    assert result.persisted is False
+    assert result.proposal.status == "invalidated"
+    with pytest.raises(ProposalWorkflowError, match="stale or absent"):
+        require_current_approval(sekai, result.proposal, drafted.proposal.draft)
+
+
+def test_approval_rejects_hash_that_does_not_match_validated_text() -> None:
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    repositories = CausalRepositories.create(sekai, "hibiki")
+    source = repositories.sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+
+    with pytest.raises(ProposalWorkflowError, match="does not match"):
+        approve_proposal(sekai, drafted.proposal.external_id, "0" * 64, "hibiki")

@@ -32,6 +32,7 @@ def invoke(
     grpc_probe: FakeGrpcHealthProbe | None = None,
     sekai_gateway: FakeSekaiGateway | None = None,
     chisei_gateway: FakeChiseiGateway | None = None,
+    stdin_payload: object | None = None,
 ) -> tuple[int, dict[str, object], str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -40,6 +41,7 @@ def invoke(
         environ=environment() if environ is None else environ,
         stdout=stdout,
         stderr=stderr,
+        stdin=io.StringIO("" if stdin_payload is None else json.dumps(stdin_payload)),
         process_runner=process_runner or FakeProcessRunner(),
         grpc_probe=grpc_probe or FakeGrpcHealthProbe(),
         sekai_gateway=sekai_gateway,
@@ -240,3 +242,53 @@ def test_draft_command_returns_proposal_claims_and_source_references() -> None:
     ]
     assert payload["source_references"] == payload["claims"][0]["source_references"]
     assert diagnostics == ""
+
+
+def test_validate_and_approve_commands_bind_exact_edited_text_hash() -> None:
+    from hibiki.discovery import discover_public_revision
+    from hibiki.proposals import draft_source
+    from hibiki.records import CausalRepositories, SourceRecord
+    from hibiki.selection import commit_evidence_hash
+    from tests.test_drafting import draft_response
+    from tests.test_validation import inventory_response, validation_response
+
+    bundle = discover_public_revision(fixture_runner(), "example/tenkai", "abc123")
+    sekai = FakeSekaiGateway()
+    source = CausalRepositories.create(sekai, "hibiki").sources.put(
+        SourceRecord(
+            stable_id="example/tenkai@abc123",
+            repository="example/tenkai",
+            revision="abc123",
+            public_url="https://github.com/example/tenkai/commit/abc123",
+            evidence_hash=commit_evidence_hash(bundle, "abc123"),
+        )
+    )
+    drafted = draft_source(
+        fixture_runner(),
+        sekai,
+        FakeChiseiGateway((draft_response(), validation_response())),
+        source.external_id,
+        "hibiki",
+    )
+    edited_text = "I made retries deterministic with a stable identity for each attempt."
+
+    validate_code, validate_payload, validate_diagnostics = invoke(
+        ["validate", drafted.proposal.external_id],
+        process_runner=fixture_runner(),  # type: ignore[arg-type]
+        sekai_gateway=sekai,
+        chisei_gateway=FakeChiseiGateway(
+            (inventory_response(edited_text), validation_response(claim=edited_text))
+        ),
+        stdin_payload={"final_text": edited_text},
+    )
+    approve_code, approve_payload, approve_diagnostics = invoke(
+        ["approve", drafted.proposal.external_id],
+        sekai_gateway=sekai,
+        stdin_payload={"final_text_hash": validate_payload["final_text_hash"]},
+    )
+
+    assert validate_code == approve_code == 0
+    assert validate_payload["status"] == "drafted"
+    assert approve_payload["status"] == "approved"
+    assert approve_payload["final_text_hash"] == validate_payload["final_text_hash"]
+    assert validate_diagnostics == approve_diagnostics == ""

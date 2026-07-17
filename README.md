@@ -80,3 +80,20 @@ claims, and source references while persisting the proposal in Sekai:
 ```sh
 uv run hibiki draft 'hibiki.source:hibiki:OWNER/REPOSITORY@REVISION'
 ```
+
+Submit edited text as JSON on stdin for an independent factual-claim inventory
+and validation. A valid edit replaces the proposal text in `drafted` state;
+unsupported text is not persisted and invalidates any prior approval:
+
+```sh
+printf '%s\n' '{"final_text":"Exact edited post text"}' | \
+  uv run hibiki validate 'hibiki.proposal:hibiki:OWNER/REPOSITORY@REVISION'
+```
+
+After presenting that exact validated text to the operator, bind explicit
+approval to its returned SHA-256 hash:
+
+```sh
+printf '%s\n' '{"final_text_hash":"SHA256_FROM_VALIDATE"}' | \
+  uv run hibiki approve 'hibiki.proposal:hibiki:OWNER/REPOSITORY@REVISION'
+```
