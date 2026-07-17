@@ -40,7 +40,6 @@ CLASSIFICATION_ACTION = "hibiki.reply_classification"
 CONFIRMATION_ACTION = "hibiki.reply_classification_confirmation"
 CALIBRATION_ACTION = "hibiki.reply_classification_evaluation"
 CLASSIFICATION_BATCH_SIZE = 20
-DECISION_HISTORY_LIMIT = 2_147_483_647
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,14 +152,7 @@ def confirm_classification(
         raise OutcomeWorkflowError("classification confirmation is already recorded")
     if existing is None:
         now = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
-    evaluations = _latest_by_target(
-        sekai.list_decisions(
-            actor="operator", action=CALIBRATION_ACTION, limit=DECISION_HISTORY_LIMIT
-        )
-    )
-    if submission_id not in evaluations:
-        now = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
-        sekai.record_decision(
+        confirmation = sekai.record_decision(
             sekai_pb2.Decision(
                 id=_decision_id("confirmation", submission_id),
                 timestamp=now,
@@ -176,18 +168,20 @@ def confirm_classification(
                 outcome="correct" if predicted == category else "corrected",
             )
         )
-        sekai.record_decision(
-            sekai_pb2.Decision(
-                id=_decision_id("evaluation", submission_id),
-                timestamp=now,
-                actor="operator",
-                action=CALIBRATION_ACTION,
-                reason="calibration evaluation for governed reply classification",
-                evidence={"publication_external_id": submission.target_external_id},
-                target_id=submission_id,
-                outcome="correct" if predicted == category else "corrected",
-            )
+    else:
+        confirmation = existing
+    sekai.record_decision(
+        sekai_pb2.Decision(
+            id=_decision_id("evaluation", submission_id),
+            timestamp=confirmation.timestamp,
+            actor="operator",
+            action=CALIBRATION_ACTION,
+            reason="calibration evaluation for governed reply classification",
+            evidence={"publication_external_id": submission.target_external_id},
+            target_id=submission_id,
+            outcome=confirmation.outcome,
         )
+    )
     confirmed_count, calibrated = _calibration(sekai)
     return ConfirmationResult(
         submission_id, predicted, category, predicted != category, confirmed_count, calibrated
@@ -446,9 +440,7 @@ def _latest_by_target(decisions: tuple[sekai_pb2.Decision, ...]) -> dict[str, se
 
 def _calibration(sekai: SekaiGateway) -> tuple[int, bool]:
     confirmations = _latest_by_target(
-        sekai.list_decisions(
-            actor="operator", action=CALIBRATION_ACTION, limit=DECISION_HISTORY_LIMIT
-        )
+        sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
     )
     count = len(confirmations)
     correct = sum(item.outcome == "correct" for item in confirmations.values())

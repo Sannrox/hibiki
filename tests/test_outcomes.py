@@ -238,7 +238,7 @@ def test_low_accuracy_does_not_enable_automatic_classification() -> None:
     assert result.classifications[0].disposition == "confirmation_required"
 
 
-def test_calibration_reads_complete_evaluation_history() -> None:
+def test_calibration_uses_the_latest_bounded_evaluation_window() -> None:
     sekai, publication = setup_publication()
     for index in range(501):
         sekai.record_decision(
@@ -257,7 +257,7 @@ def test_calibration_reads_complete_evaluation_history() -> None:
         sekai, FakeChiseiGateway(classification_payload(1)), publication.external_id, "hibiki"
     )
 
-    assert result.confirmed_count == 501
+    assert result.confirmed_count == 500
     assert result.calibrated is True
 
 
