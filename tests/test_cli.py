@@ -4,6 +4,8 @@ import io
 import json
 import subprocess
 
+import pytest
+
 from hibiki.boundaries import ProbeResult, ProcessResult
 from hibiki.cli import run
 from hibiki.contracts import sekai_pb2
@@ -348,4 +350,39 @@ def test_publish_command_is_write_disabled_in_ci() -> None:
     assert payload["error"]["code"] == "publication_failed"
     assert "live publication is disabled" in payload["error"]["message"]
     assert runner.calls == []
+    assert "publication failed" in diagnostics
+
+
+def test_publish_reconciliation_emits_structured_error_when_birdclaw_is_missing() -> None:
+    from hibiki.publication import PublicationWorkflowError
+    from tests.test_publication import (
+        BirdClawRunner,
+        _approved_proposal,
+        _publish,
+        _result,
+    )
+
+    class MissingBirdClawRunner:
+        def run(self, argv: tuple[str, ...], timeout: float) -> ProcessResult:
+            raise FileNotFoundError("birdclaw")
+
+    sekai = FakeSekaiGateway()
+    proposal = _approved_proposal(sekai)
+    with pytest.raises(PublicationWorkflowError):
+        _publish(
+            BirdClawRunner([_result({}, returncode=4, stderr="connection lost")]),
+            sekai,
+            proposal,
+        )
+
+    exit_code, payload, diagnostics = invoke(
+        ["publish", proposal.external_id],
+        environ=environment() | {"HIBIKI_ALLOW_LIVE_WRITES": "true"},
+        process_runner=MissingBirdClawRunner(),  # type: ignore[arg-type]
+        sekai_gateway=sekai,
+    )
+
+    assert exit_code == 1
+    assert payload["error"]["code"] == "publication_failed"
+    assert "could not start" in payload["error"]["message"]
     assert "publication failed" in diagnostics

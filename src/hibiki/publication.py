@@ -406,7 +406,14 @@ def _run_json(
     argv: tuple[str, ...],
     command: str,
 ) -> object:
-    result = process_runner.run(argv, BIRDCLAW_TIMEOUT_SECONDS)
+    try:
+        result = process_runner.run(argv, BIRDCLAW_TIMEOUT_SECONDS)
+    except OSError as error:
+        raise PublicationWorkflowError(
+            f"BirdClaw {command} could not start: {error}"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise PublicationWorkflowError(f"BirdClaw {command} timed out") from error
     _require_success(result, command)
     try:
         return json.loads(result.stdout)

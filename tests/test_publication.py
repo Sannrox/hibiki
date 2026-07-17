@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, field, replace
 
 import pytest
@@ -439,6 +440,30 @@ def test_retry_requires_a_separate_no_match_reconciliation() -> None:
     assert publication is not None
     assert publication.status == "failed"
     assert reconcile_runner.calls == _readback_calls(proposal)
+
+
+def test_reconciliation_timeout_stays_uncertain_and_actionable() -> None:
+    class TimeoutRunner:
+        def run(self, argv: tuple[str, ...], timeout: float) -> ProcessResult:
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+    sekai = FakeSekaiGateway()
+    proposal = _approved_proposal(sekai)
+    with pytest.raises(PublicationWorkflowError):
+        _publish(
+            BirdClawRunner([_result({}, returncode=4, stderr="connection lost")]),
+            sekai,
+            proposal,
+        )
+
+    with pytest.raises(PublicationWorkflowError, match="sync authored timed out"):
+        _publish(TimeoutRunner(), sekai, proposal)  # type: ignore[arg-type]
+
+    publication = CausalRepositories.create(sekai, "hibiki").publications.get(
+        proposal.stable_id
+    )
+    assert publication is not None
+    assert publication.status == "uncertain"
 
 
 def test_pending_attempt_blocks_proposal_edits_until_reconciled() -> None:
