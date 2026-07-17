@@ -218,10 +218,10 @@ def test_collects_raw_snapshot_and_replies_onto_the_publication() -> None:
     assert result.snapshot_deduplicated is False
     assert len(result.reply_submission_ids) == 1
     assert [envelope.evidence_type for envelope in gateway.evidence_envelopes] == [
-        SNAPSHOT_TYPE,
         REPLY_TYPE,
+        SNAPSHOT_TYPE,
     ]
-    snapshot, reply = gateway.evidence_envelopes
+    reply, snapshot = gateway.evidence_envelopes
     assert snapshot.target_external_id == publication.external_id
     assert snapshot.target_kind == "hibiki.publication"
     assert snapshot.source_instance == "builder"
@@ -376,11 +376,7 @@ def test_expired_retry_rejects_a_collection_without_a_completion_marker() -> Non
             clock_ms=lambda: NOW_MS,
         )
 
-    assert [item.evidence_type for item in gateway.evidence_envelopes] == [SNAPSHOT_TYPE]
-    assert not any(
-        decision.action == "hibiki.evidence_collection_completed"
-        for decision in gateway.decisions.values()
-    )
+    assert [item.evidence_type for item in gateway.evidence_envelopes] == [REPLY_TYPE]
     with pytest.raises(EvidenceWorkflowError, match="7d evidence window has expired"):
         collect_publication_evidence(
             SequenceRunner([]),

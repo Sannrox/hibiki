@@ -32,7 +32,6 @@ WINDOW_TOLERANCE_MILLISECONDS = {
     "7d": 24 * 60 * 60 * 1000,
 }
 REGISTRATION_ACTION = "hibiki.evidence_contract_registered"
-COLLECTION_ACTION = "hibiki.evidence_collection_completed"
 MAX_REGISTRATION_VERSION_ATTEMPTS = 100
 METRIC_FIELDS = {
     "impressions": "impression_count",
@@ -179,13 +178,12 @@ def collect_publication_evidence(
         None,
     )
     existing_replies = _list_submissions(sekai, publication.external_id, REPLY_TYPE)
-    completion = _collection_completion(sekai, publication.external_id, publication.post_id, window)
     if now_ms > (
         publication.attempted_at
         + WINDOW_MILLISECONDS[window]
         + WINDOW_TOLERANCE_MILLISECONDS[window]
     ):
-        if snapshot is None or completion is None:
+        if snapshot is None:
             raise EvidenceWorkflowError(f"{window} evidence window has expired")
         return CollectionResult(
             publication.external_id,
@@ -198,6 +196,7 @@ def collect_publication_evidence(
         )
     snapshot_deduplicated = snapshot is not None
     pending: list[sekai_pb2.EvidenceEnvelope] = []
+    snapshot_envelope: sekai_pb2.EvidenceEnvelope | None = None
     if snapshot is None:
         post = _collect_post(process_runner, publication)
         content = {
@@ -205,20 +204,18 @@ def collect_publication_evidence(
             "window": window,
             "metrics": _metrics(post.get("public_metrics"), require_all=True),
         }
-        pending.append(
-            _build_envelope(
-                publication,
-                account,
-                source_record_id=publication.post_id,
-                source_version=window,
-                source_sequence=1 if window == "24h" else 2,
-                evidence_type=SNAPSHOT_TYPE,
-                signal="other",
-                observed_at_ms=now_ms,
-                collected_at_ms=now_ms,
-                content=content,
-                idempotency_key=f"birdclaw:{account}:post:{publication.post_id}:{window}",
-            )
+        snapshot_envelope = _build_envelope(
+            publication,
+            account,
+            source_record_id=publication.post_id,
+            source_version=window,
+            source_sequence=1 if window == "24h" else 2,
+            evidence_type=SNAPSHOT_TYPE,
+            signal="other",
+            observed_at_ms=now_ms,
+            collected_at_ms=now_ms,
+            content=content,
+            idempotency_key=f"birdclaw:{account}:post:{publication.post_id}:{window}",
         )
 
     existing_reply_ids = {item.source_record_id: item for item in existing_replies}
@@ -260,6 +257,12 @@ def collect_publication_evidence(
             )
         )
 
+    # The snapshot is the durable completion marker. Submitting it last means
+    # its presence proves every reply discovered in this complete sync was
+    # already projected, even though Sekai's v1 batch RPC is not atomic.
+    if snapshot_envelope is not None:
+        pending.append(snapshot_envelope)
+
     submitted_by_type: dict[str, list[sekai_pb2.EvidenceSubmissionRecord]] = {}
     for envelope in pending:
         submitted = _submit(sekai, envelope)
@@ -269,16 +272,6 @@ def collect_publication_evidence(
     reply_submission_ids.extend(
         item.id for item in submitted_by_type.get(REPLY_TYPE, ())
     )
-    if completion is None:
-        _record_collection_completion(
-            sekai,
-            publication,
-            window,
-            snapshot.id,
-            len(existing_replies) + len(reply_submission_ids),
-            now_ms,
-        )
-
     return CollectionResult(
         publication.external_id,
         publication.post_id,
@@ -310,59 +303,6 @@ def _register_producer(
     raise EvidenceWorkflowError(
         "could not negotiate the evidence producer config version; "
         "inspect the Sekai producer registration"
-    )
-
-
-def _collection_completion(
-    sekai: SekaiGateway,
-    publication_external_id: str,
-    post_id: str,
-    window: str,
-) -> sekai_pb2.Decision | None:
-    return next(
-        (
-            decision
-            for decision in sekai.list_decisions(
-                actor="hibiki", action=COLLECTION_ACTION, limit=1_000
-            )
-            if decision.target_id == publication_external_id
-            and decision.outcome == "success"
-            and decision.evidence.get("post_id") == post_id
-            and decision.evidence.get("window") == window
-        ),
-        None,
-    )
-
-
-def _record_collection_completion(
-    sekai: SekaiGateway,
-    publication: PublicationRecord,
-    window: str,
-    snapshot_submission_id: str,
-    reply_count: int,
-    completed_at_ms: int,
-) -> None:
-    sekai.record_decision(
-        sekai_pb2.Decision(
-            id=str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"{COLLECTION_ACTION}:{publication.external_id}:{window}",
-                )
-            ),
-            timestamp=completed_at_ms,
-            actor="hibiki",
-            action=COLLECTION_ACTION,
-            reason="All planned BirdClaw evidence envelopes were projected.",
-            evidence={
-                "post_id": publication.post_id,
-                "window": window,
-                "snapshot_submission_id": snapshot_submission_id,
-                "reply_count": str(reply_count),
-            },
-            target_id=publication.external_id,
-            outcome="success",
-        )
     )
 
 
