@@ -40,6 +40,7 @@ CLASSIFICATION_ACTION = "hibiki.reply_classification"
 CONFIRMATION_ACTION = "hibiki.reply_classification_confirmation"
 CALIBRATION_ACTION = "hibiki.reply_classification_evaluation"
 CLASSIFICATION_BATCH_SIZE = 20
+DECISION_HISTORY_LIMIT = 2_147_483_647
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +154,9 @@ def confirm_classification(
     if existing is None:
         now = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
     evaluations = _latest_by_target(
-        sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
+        sekai.list_decisions(
+            actor="operator", action=CALIBRATION_ACTION, limit=DECISION_HISTORY_LIMIT
+        )
     )
     if submission_id not in evaluations:
         now = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
@@ -443,7 +446,9 @@ def _latest_by_target(decisions: tuple[sekai_pb2.Decision, ...]) -> dict[str, se
 
 def _calibration(sekai: SekaiGateway) -> tuple[int, bool]:
     confirmations = _latest_by_target(
-        sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
+        sekai.list_decisions(
+            actor="operator", action=CALIBRATION_ACTION, limit=DECISION_HISTORY_LIMIT
+        )
     )
     count = len(confirmations)
     correct = sum(item.outcome == "correct" for item in confirmations.values())
