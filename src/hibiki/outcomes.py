@@ -92,7 +92,7 @@ def classify_replies(
     action = _scoped_action(CLASSIFICATION_ACTION, publication.external_id)
     existing = _latest_by_target(sekai.list_decisions(actor="hibiki", action=action, limit=1000))
     pending = tuple(reply for reply in replies if reply.id not in existing)
-    confirmed_count, calibrated = _calibration(sekai)
+    confirmed_count, calibrated = _calibration(sekai, namespace)
     if pending:
         now = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
         for batch_start in range(0, len(pending), CLASSIFICATION_BATCH_SIZE):
@@ -170,7 +170,8 @@ def confirm_classification(
         )
     else:
         confirmation = existing
-    evaluations = sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
+    evaluation_action = calibration_action(submission.namespace)
+    evaluations = sekai.list_decisions(actor="operator", action=evaluation_action, limit=500)
     evaluated_targets = {item.target_id for item in evaluations}
     recoverable = len(evaluations) < 500 or confirmation.timestamp > min(
         item.timestamp for item in evaluations
@@ -181,14 +182,14 @@ def confirm_classification(
                 id=_decision_id("evaluation", submission_id),
                 timestamp=confirmation.timestamp,
                 actor="operator",
-                action=CALIBRATION_ACTION,
+                action=evaluation_action,
                 reason="calibration evaluation for governed reply classification",
                 evidence={"publication_external_id": submission.target_external_id},
                 target_id=submission_id,
                 outcome=confirmation.outcome,
             )
         )
-    confirmed_count, calibrated = _calibration(sekai)
+    confirmed_count, calibrated = _calibration(sekai, submission.namespace)
     return ConfirmationResult(
         submission_id, predicted, category, predicted != category, confirmed_count, calibrated
     )
@@ -444,9 +445,9 @@ def _latest_by_target(decisions: tuple[sekai_pb2.Decision, ...]) -> dict[str, se
     return result
 
 
-def _calibration(sekai: SekaiGateway) -> tuple[int, bool]:
+def _calibration(sekai: SekaiGateway, namespace: str) -> tuple[int, bool]:
     confirmations = _latest_by_target(
-        sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
+        sekai.list_decisions(actor="operator", action=calibration_action(namespace), limit=500)
     )
     count = len(confirmations)
     correct = sum(item.outcome == "correct" for item in confirmations.values())
@@ -480,6 +481,10 @@ def _decision_id(kind: str, target: str) -> str:
 def _scoped_action(action: str, publication_external_id: str) -> str:
     digest = hashlib.sha256(publication_external_id.encode()).hexdigest()[:24]
     return f"{action}:{digest}"
+
+
+def calibration_action(namespace: str) -> str:
+    return _scoped_action(CALIBRATION_ACTION, namespace)
 
 
 def _json_object(content: str, label: str) -> dict[str, object]:

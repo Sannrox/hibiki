@@ -7,10 +7,10 @@ import pytest
 from hibiki.contracts import sekai_pb2
 from hibiki.evidence import PRODUCER_IDENTITY, REPLY_TYPE, SNAPSHOT_TYPE
 from hibiki.outcomes import (
-    CALIBRATION_ACTION,
     CATEGORIES,
     OutcomeWorkflowError,
     build_outcome_report,
+    calibration_action,
     classify_replies,
     confirm_classification,
 )
@@ -72,6 +72,7 @@ def add_submission(
                 producer_identity=PRODUCER_IDENTITY,
                 source_record_id=source_record_id,
                 source_version=source_version,
+                namespace=publication.namespace,
                 target_external_id=publication.external_id,
                 target_kind="hibiki.publication",
                 evidence_type=evidence_type,
@@ -165,7 +166,7 @@ def test_confirmation_retry_repairs_a_missing_calibration_evaluation() -> None:
         fail_evaluation = True
 
         def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision:
-            if decision.action == CALIBRATION_ACTION and self.fail_evaluation:
+            if decision.action == calibration_action("hibiki") and self.fail_evaluation:
                 self.fail_evaluation = False
                 raise RuntimeError("transient evaluation failure")
             return super().record_decision(decision)
@@ -188,7 +189,14 @@ def test_confirmation_retry_repairs_a_missing_calibration_evaluation() -> None:
 
     assert result.confirmed_count == 1
     assert (
-        len([item for item in sekai.decisions.values() if item.action == CALIBRATION_ACTION]) == 1
+        len(
+            [
+                item
+                for item in sekai.decisions.values()
+                if item.action == calibration_action("hibiki")
+            ]
+        )
+        == 1
     )
 
 
@@ -225,7 +233,7 @@ def test_calibrated_high_confidence_classification_can_be_automatic() -> None:
                 id=f"confirmation-{index}",
                 timestamp=index,
                 actor="operator",
-                action=CALIBRATION_ACTION,
+                action=calibration_action("hibiki"),
                 target_id=f"prior-{index}",
                 outcome="correct",
                 evidence={"confirmed_category": "potential_user"},
@@ -248,7 +256,7 @@ def test_low_accuracy_does_not_enable_automatic_classification() -> None:
                 id=f"confirmation-{index}",
                 timestamp=index,
                 actor="operator",
-                action=CALIBRATION_ACTION,
+                action=calibration_action("hibiki"),
                 target_id=f"prior-{index}",
                 outcome="correct" if index < 20 else "corrected",
                 evidence={"confirmed_category": "potential_user"},
@@ -263,6 +271,29 @@ def test_low_accuracy_does_not_enable_automatic_classification() -> None:
     assert result.classifications[0].disposition == "confirmation_required"
 
 
+def test_calibration_does_not_cross_namespace_boundaries() -> None:
+    sekai, publication = setup_publication()
+    for index in range(25):
+        sekai.record_decision(
+            sekai_pb2.Decision(
+                id=f"other-evaluation-{index}",
+                timestamp=index,
+                actor="operator",
+                action=calibration_action("other"),
+                target_id=f"other-{index}",
+                outcome="correct",
+            )
+        )
+
+    result = classify_replies(
+        sekai, FakeChiseiGateway(classification_payload(1)), publication.external_id, "hibiki"
+    )
+
+    assert result.confirmed_count == 0
+    assert result.calibrated is False
+    assert result.classifications[0].disposition == "confirmation_required"
+
+
 def test_calibration_uses_the_latest_bounded_evaluation_window() -> None:
     sekai, publication = setup_publication()
     for index in range(501):
@@ -271,7 +302,7 @@ def test_calibration_uses_the_latest_bounded_evaluation_window() -> None:
                 id=f"confirmation-{index}",
                 timestamp=index + 1,
                 actor="operator",
-                action=CALIBRATION_ACTION,
+                action=calibration_action("hibiki"),
                 target_id=f"prior-{index}",
                 outcome="correct",
                 evidence={"confirmed_category": "potential_user"},
