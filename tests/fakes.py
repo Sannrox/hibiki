@@ -89,9 +89,7 @@ class FakeSekaiGateway:
     object_creates: list[str] = field(default_factory=list)
     object_updates: list[str] = field(default_factory=list)
     decisions: dict[str, sekai_pb2.Decision] = field(default_factory=dict)
-    evidence_producers: list[sekai_pb2.EvidenceProducerCapability] = field(
-        default_factory=list
-    )
+    evidence_producers: list[sekai_pb2.EvidenceProducerCapability] = field(default_factory=list)
     evidence_schemas: list[sekai_pb2.EvidenceSchemaDefinition] = field(default_factory=list)
     evidence_envelopes: list[sekai_pb2.EvidenceEnvelope] = field(default_factory=list)
     evidence_results: list[sekai_pb2.EvidenceSubmissionResult] = field(default_factory=list)
@@ -148,9 +146,7 @@ class FakeSekaiGateway:
         ]
         return tuple(sorted(matches, key=lambda decision: decision.timestamp, reverse=True)[:limit])
 
-    def register_evidence_producer(
-        self, capability: sekai_pb2.EvidenceProducerCapability
-    ) -> None:
+    def register_evidence_producer(self, capability: sekai_pb2.EvidenceProducerCapability) -> None:
         stored = sekai_pb2.EvidenceProducerCapability()
         stored.CopyFrom(capability)
         self.evidence_producers.append(stored)
@@ -206,3 +202,11 @@ class FakeSekaiGateway:
             and result.submission.evidence_type == evidence_type
         ]
         return tuple(matches[:limit])
+
+    def get_evidence_submission(self, submission_id: str) -> sekai_pb2.EvidenceSubmissionRecord:
+        for result in self.evidence_results:
+            if result.submission.id == submission_id:
+                stored = sekai_pb2.EvidenceSubmissionRecord()
+                stored.CopyFrom(result.submission)
+                return stored
+        raise KeyError(submission_id)

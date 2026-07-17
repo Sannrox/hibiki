@@ -46,6 +46,8 @@ class SekaiGateway(Protocol):
         limit: int,
     ) -> tuple[sekai_pb2.EvidenceSubmissionRecord, ...]: ...
 
+    def get_evidence_submission(self, submission_id: str) -> sekai_pb2.EvidenceSubmissionRecord: ...
+
 
 @dataclass(frozen=True, slots=True)
 class NativeSekaiGateway:
@@ -127,9 +129,7 @@ class NativeSekaiGateway:
             )
         return tuple(response.decisions)
 
-    def register_evidence_producer(
-        self, capability: sekai_pb2.EvidenceProducerCapability
-    ) -> None:
+    def register_evidence_producer(self, capability: sekai_pb2.EvidenceProducerCapability) -> None:
         with grpc.insecure_channel(self.target) as channel:
             sekai_pb2_grpc.SekaiServiceStub(channel).RegisterEvidenceProducer(
                 sekai_pb2.RegisterEvidenceProducerRequest(capability=capability),
@@ -176,3 +176,12 @@ class NativeSekaiGateway:
                 metadata=(("x-principal", producer_identity),),
             )
         return tuple(response.submissions)
+
+    def get_evidence_submission(self, submission_id: str) -> sekai_pb2.EvidenceSubmissionRecord:
+        with grpc.insecure_channel(self.target) as channel:
+            response = sekai_pb2_grpc.SekaiServiceStub(channel).GetEvidenceSubmission(
+                sekai_pb2.GetEvidenceSubmissionRequest(submission_id=submission_id),
+                timeout=self.timeout,
+                metadata=self._metadata,
+            )
+        return response.submission

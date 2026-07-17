@@ -133,3 +133,33 @@ and reuses prior snapshot and reply submissions on repeated collection. The
 observation has a one-day tolerance, so late cumulative metrics cannot be
 mislabelled as fixed-window results. The generated BirdClaw digest is never
 invoked or admitted as source evidence.
+
+Classify collected replies through Chisei's governed native execution. The
+first 25 classifications always require an operator confirmation; corrections
+are retained as evaluation decisions. Automatic classification is enabled only
+after those confirmations reach 90% accuracy, and still requires at least 90%
+confidence:
+
+```sh
+uv run hibiki classify \
+  'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION'
+uv run hibiki confirm EVIDENCE_SUBMISSION_ID potential_user
+```
+
+The accepted categories are `potential_user`,
+`potential_tester_or_contributor`, `substantive_technical_discussion`,
+`general_reaction`, and `irrelevant_or_low_signal`.
+
+After required confirmations are complete, return the 24-hour preliminary or
+seven-day final outcome to Onmyoji:
+
+```sh
+uv run hibiki outcome \
+  'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 24h
+uv run hibiki outcome \
+  'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 7d
+```
+
+Outcome JSON keeps raw engagement metrics separate from the primary
+`qualified_replies` count and includes the complete source, proposal,
+publication, evidence-submission, and outcome lineage.

@@ -145,6 +145,78 @@ def test_usage_errors_are_json_on_stdout() -> None:
     assert diagnostics.startswith("hibiki: unknown command")
 
 
+def test_classify_and_confirm_commands_return_operator_work() -> None:
+    from tests.test_outcomes import classification_payload, setup_publication
+
+    sekai, publication = setup_publication()
+    chisei = FakeChiseiGateway(classification_payload(1))
+
+    classify_code, classify_payload_result, classify_diagnostics = invoke(
+        ["classify", publication.external_id],
+        sekai_gateway=sekai,
+        chisei_gateway=chisei,
+    )
+    confirm_code, confirm_payload, confirm_diagnostics = invoke(
+        ["confirm", "reply-submission-0", "potential_user"],
+        sekai_gateway=sekai,
+    )
+
+    assert classify_code == confirm_code == 0
+    assert classify_payload_result["classifications"][0]["disposition"] == ("confirmation_required")
+    assert confirm_payload["confirmed_count"] == 1
+    assert classify_diagnostics == confirm_diagnostics == ""
+
+
+def test_outcome_command_returns_final_lineage() -> None:
+    from hibiki.evidence import SNAPSHOT_TYPE
+    from hibiki.outcomes import classify_replies, confirm_classification
+    from tests.test_outcomes import (
+        add_submission,
+        classification_payload,
+        setup_publication,
+    )
+
+    sekai, publication = setup_publication()
+    add_submission(
+        sekai,
+        publication,
+        evidence_type=SNAPSHOT_TYPE,
+        submission_id="snapshot-7d",
+        source_record_id=publication.post_id,
+        source_version="7d:complete-v2",
+    )
+    chisei = FakeChiseiGateway(
+        (
+            classification_payload(1),
+            json.dumps(
+                {
+                    "metrics": {
+                        "impressions": 100,
+                        "likes": 2,
+                        "replies": 1,
+                        "reposts": 1,
+                        "quotes": 0,
+                    }
+                }
+            ),
+        )
+    )
+    classify_replies(sekai, chisei, publication.external_id, "hibiki")
+    confirm_classification(sekai, "reply-submission-0", "potential_user")
+
+    exit_code, payload, diagnostics = invoke(
+        ["outcome", publication.external_id, "7d"],
+        sekai_gateway=sekai,
+        chisei_gateway=chisei,
+    )
+
+    assert exit_code == 0
+    assert payload["status"] == "final"
+    assert payload["qualified_replies"] == 1
+    assert payload["lineage"]["snapshot_submission_id"] == "snapshot-7d"
+    assert diagnostics == ""
+
+
 def test_schema_command_reports_created_and_unchanged_types() -> None:
     gateway = FakeSekaiGateway()
 
@@ -340,8 +412,7 @@ def test_publish_command_is_write_disabled_in_ci() -> None:
 
     exit_code, payload, diagnostics = invoke(
         ["publish", proposal.external_id],
-        environ=environment()
-        | {"HIBIKI_ALLOW_LIVE_WRITES": "true", "CI": "true"},
+        environ=environment() | {"HIBIKI_ALLOW_LIVE_WRITES": "true", "CI": "true"},
         process_runner=runner,  # type: ignore[arg-type]
         sekai_gateway=sekai,
     )
