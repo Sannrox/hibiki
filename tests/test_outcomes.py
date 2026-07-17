@@ -160,6 +160,38 @@ def test_confirmation_persists_correction_as_evaluation_evidence() -> None:
     assert confirmation.evidence["confirmed_category"] == "substantive_technical_discussion"
 
 
+def test_confirmation_retry_repairs_a_missing_calibration_evaluation() -> None:
+    class EvaluationFailureGateway(FakeSekaiGateway):
+        fail_evaluation = True
+
+        def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision:
+            if decision.action == CALIBRATION_ACTION and self.fail_evaluation:
+                self.fail_evaluation = False
+                raise RuntimeError("transient evaluation failure")
+            return super().record_decision(decision)
+
+    base, publication = setup_publication()
+    sekai = EvaluationFailureGateway(
+        objects=base.objects,
+        evidence_results=base.evidence_results,
+    )
+    classify_replies(
+        sekai,
+        FakeChiseiGateway(classification_payload(1)),
+        publication.external_id,
+        "hibiki",
+    )
+
+    with pytest.raises(RuntimeError, match="transient evaluation failure"):
+        confirm_classification(sekai, "reply-submission-0", "potential_user")
+    result = confirm_classification(sekai, "reply-submission-0", "potential_user")
+
+    assert result.confirmed_count == 1
+    assert (
+        len([item for item in sekai.decisions.values() if item.action == CALIBRATION_ACTION]) == 1
+    )
+
+
 def test_calibrated_high_confidence_classification_can_be_automatic() -> None:
     sekai, publication = setup_publication()
     for index in range(25):

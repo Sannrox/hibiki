@@ -90,7 +90,7 @@ def classify_replies(
     publication = _publication(sekai, publication_external_id, namespace)
     replies = _submissions(sekai, publication.external_id, REPLY_TYPE)
     action = _scoped_action(CLASSIFICATION_ACTION, publication.external_id)
-    existing = _latest_by_target(sekai.list_decisions(actor="hibiki", action=action, limit=500))
+    existing = _latest_by_target(sekai.list_decisions(actor="hibiki", action=action, limit=1000))
     pending = tuple(reply for reply in replies if reply.id not in existing)
     confirmed_count, calibrated = _calibration(sekai)
     if pending:
@@ -139,18 +139,23 @@ def confirm_classification(
     classification_action = _scoped_action(CLASSIFICATION_ACTION, submission.target_external_id)
     confirmation_action = _scoped_action(CONFIRMATION_ACTION, submission.target_external_id)
     predictions = _latest_by_target(
-        sekai.list_decisions(actor="hibiki", action=classification_action, limit=500)
+        sekai.list_decisions(actor="hibiki", action=classification_action, limit=1000)
     )
     prediction = predictions.get(submission_id)
     if prediction is None:
         raise OutcomeWorkflowError("reply must be classified before confirmation")
     predicted = prediction.evidence.get("category", "")
     existing = _latest_by_target(
-        sekai.list_decisions(actor="operator", action=confirmation_action, limit=500)
+        sekai.list_decisions(actor="operator", action=confirmation_action, limit=1000)
     ).get(submission_id)
     if existing is not None and existing.evidence.get("confirmed_category") != category:
         raise OutcomeWorkflowError("classification confirmation is already recorded")
     if existing is None:
+        now = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
+    evaluations = _latest_by_target(
+        sekai.list_decisions(actor="operator", action=CALIBRATION_ACTION, limit=500)
+    )
+    if submission_id not in evaluations:
         now = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
         sekai.record_decision(
             sekai_pb2.Decision(
@@ -222,7 +227,7 @@ def build_outcome_report(
         sekai.list_decisions(
             actor="operator",
             action=_scoped_action(CONFIRMATION_ACTION, publication.external_id),
-            limit=500,
+            limit=1000,
         )
     )
     unresolved = tuple(
