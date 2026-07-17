@@ -22,6 +22,7 @@ SOURCE_TYPE = "birdclaw"
 SNAPSHOT_TYPE = "social.post_snapshot"
 REPLY_TYPE = "social.reply"
 SCHEMA_VERSION = "1.0.0"
+SNAPSHOT_COMPLETION_VERSION = "complete-v2"
 CONTRACT_VERSION = "sekai.evidence/v1"
 MAX_CONTENT_BYTES = 64 * 1024
 MAX_REPLIES = 500
@@ -173,7 +174,8 @@ def collect_publication_evidence(
         (
             item
             for item in existing_snapshots
-            if item.source_record_id == publication.post_id and item.source_version == window
+            if item.source_record_id == publication.post_id
+            and item.source_version == _snapshot_source_version(window)
         ),
         None,
     )
@@ -208,14 +210,17 @@ def collect_publication_evidence(
             publication,
             account,
             source_record_id=publication.post_id,
-            source_version=window,
+            source_version=_snapshot_source_version(window),
             source_sequence=1 if window == "24h" else 2,
             evidence_type=SNAPSHOT_TYPE,
             signal="other",
             observed_at_ms=now_ms,
             collected_at_ms=now_ms,
             content=content,
-            idempotency_key=f"birdclaw:{account}:post:{publication.post_id}:{window}",
+            idempotency_key=(
+                f"birdclaw:{account}:post:{publication.post_id}:{window}:"
+                f"{SNAPSHOT_COMPLETION_VERSION}"
+            ),
         )
 
     existing_reply_ids = {item.source_record_id: item for item in existing_replies}
@@ -304,6 +309,10 @@ def _register_producer(
         "could not negotiate the evidence producer config version; "
         "inspect the Sekai producer registration"
     )
+
+
+def _snapshot_source_version(window: str) -> str:
+    return f"{window}:{SNAPSHOT_COMPLETION_VERSION}"
 
 
 def _list_submissions(

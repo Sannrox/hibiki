@@ -7,6 +7,7 @@ import grpc
 import pytest
 
 from hibiki.boundaries import ProcessResult
+from hibiki.contracts import sekai_pb2
 from hibiki.evidence import (
     PRODUCER_IDENTITY,
     REPLY_TYPE,
@@ -225,7 +226,8 @@ def test_collects_raw_snapshot_and_replies_onto_the_publication() -> None:
     assert snapshot.target_external_id == publication.external_id
     assert snapshot.target_kind == "hibiki.publication"
     assert snapshot.source_instance == "builder"
-    assert snapshot.idempotency_key.endswith(":1900000000000000000:7d")
+    assert snapshot.idempotency_key.endswith(":1900000000000000000:7d:complete-v2")
+    assert snapshot.source_version == "7d:complete-v2"
     assert json.loads(snapshot.content_json) == {
         "metrics": {
             "impressions": 1200,
@@ -317,6 +319,36 @@ def test_late_retry_returns_prior_submissions_without_relabeling_current_metrics
     assert result.replies_deduplicated == 1
     assert retry.calls == []
     assert len(gateway.evidence_envelopes) == 2
+
+
+def test_legacy_snapshot_does_not_claim_completion_after_the_window_expires() -> None:
+    gateway = FakeSekaiGateway()
+    publication = _posted_publication(gateway)
+    gateway.evidence_results.append(
+        sekai_pb2.EvidenceSubmissionResult(
+            admitted=True,
+            projected=True,
+            submission=sekai_pb2.EvidenceSubmissionRecord(
+                id="legacy-snapshot",
+                producer_identity=PRODUCER_IDENTITY,
+                source_record_id=publication.post_id,
+                source_version="7d",
+                target_external_id=publication.external_id,
+                evidence_type=SNAPSHOT_TYPE,
+            ),
+        )
+    )
+
+    with pytest.raises(EvidenceWorkflowError, match="7d evidence window has expired"):
+        collect_publication_evidence(
+            SequenceRunner([]),
+            gateway,
+            publication.external_id,
+            "builder",
+            "hibiki",
+            "7d",
+            clock_ms=lambda: NOW_MS + 2 * 24 * 60 * 60 * 1000,
+        )
 
 
 def test_rejects_partial_birdclaw_data_without_submitting_evidence() -> None:
