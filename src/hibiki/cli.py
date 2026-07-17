@@ -18,6 +18,11 @@ from hibiki.chisei import ChiseiGateway, NativeChiseiGateway
 from hibiki.config import ConfigurationError, Settings
 from hibiki.discovery import DiscoveryError
 from hibiki.drafting import DraftingError
+from hibiki.evidence import (
+    EvidenceWorkflowError,
+    collect_publication_evidence,
+    register_evidence_contracts,
+)
 from hibiki.health import Check, run_health_checks, serialize_checks
 from hibiki.proposals import (
     ProposalWorkflowError,
@@ -35,7 +40,8 @@ from hibiki.validation import ClaimValidationError
 
 USAGE = (
     "usage: hibiki <health|config|schema|recommend|draft SOURCE_ID|"
-    "validate PROPOSAL_ID|approve PROPOSAL_ID|publish PROPOSAL_ID> "
+    "validate PROPOSAL_ID|approve PROPOSAL_ID|publish PROPOSAL_ID|"
+    "collect PUBLICATION_ID 24h|7d> "
     "[--timeout SECONDS]"
 )
 
@@ -71,6 +77,7 @@ def run(
         "validate",
         "approve",
         "publish",
+        "collect",
     }:
         return _usage_error(stdout, stderr, f"unknown command: {command}")
     if command in {"config", "schema", "recommend"} and len(argv) != 1:
@@ -79,6 +86,8 @@ def run(
         return _usage_error(stdout, stderr, "draft requires SOURCE_ID")
     if command in {"validate", "approve", "publish"} and len(argv) != 2:
         return _usage_error(stdout, stderr, f"{command} requires PROPOSAL_ID")
+    if command == "collect" and (len(argv) != 3 or argv[2] not in {"24h", "7d"}):
+        return _usage_error(stdout, stderr, "collect requires PUBLICATION_ID and 24h or 7d")
 
     try:
         settings = Settings.from_environ(environ)
@@ -106,6 +115,9 @@ def run(
         gateway = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
         try:
             result = register_schema_types(gateway)
+            evidence = register_evidence_contracts(
+                gateway, settings.namespace, settings.birdclaw_account
+            )
         except (SchemaConflictError, grpc.RpcError) as error:
             _emit_error(stdout, command, "schema_registration_failed", str(error))
             print(f"hibiki: schema registration failed: {error}", file=stderr)
@@ -118,6 +130,44 @@ def run(
                 "created": result.created,
                 "updated": result.updated,
                 "unchanged": result.unchanged,
+                "evidence_producer": evidence.producer_identity,
+                "evidence_schemas": evidence.evidence_types,
+            },
+        )
+        return 0
+
+    if command == "collect":
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        try:
+            result = collect_publication_evidence(
+                process_runner,
+                sekai,
+                argv[1],
+                settings.birdclaw_account,
+                settings.namespace,
+                argv[2],
+            )
+        except (
+            EvidenceWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "evidence_collection_failed", str(error))
+            print(f"hibiki: evidence collection failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "publication_external_id": result.publication_external_id,
+                "post_id": result.post_id,
+                "window": result.window,
+                "snapshot_submission_id": result.snapshot_submission_id,
+                "snapshot_deduplicated": result.snapshot_deduplicated,
+                "reply_submission_ids": result.reply_submission_ids,
+                "replies_deduplicated": result.replies_deduplicated,
             },
         )
         return 0

@@ -27,6 +27,25 @@ class SekaiGateway(Protocol):
         self, *, actor: str, action: str, limit: int
     ) -> tuple[sekai_pb2.Decision, ...]: ...
 
+    def register_evidence_producer(
+        self, capability: sekai_pb2.EvidenceProducerCapability
+    ) -> None: ...
+
+    def register_evidence_schema(self, definition: sekai_pb2.EvidenceSchemaDefinition) -> None: ...
+
+    def submit_evidence(
+        self, envelope: sekai_pb2.EvidenceEnvelope
+    ) -> sekai_pb2.EvidenceSubmissionResult: ...
+
+    def list_evidence_submissions(
+        self,
+        *,
+        producer_identity: str,
+        target_external_id: str,
+        evidence_type: str,
+        limit: int,
+    ) -> tuple[sekai_pb2.EvidenceSubmissionRecord, ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class NativeSekaiGateway:
@@ -107,3 +126,53 @@ class NativeSekaiGateway:
                 metadata=self._metadata,
             )
         return tuple(response.decisions)
+
+    def register_evidence_producer(
+        self, capability: sekai_pb2.EvidenceProducerCapability
+    ) -> None:
+        with grpc.insecure_channel(self.target) as channel:
+            sekai_pb2_grpc.SekaiServiceStub(channel).RegisterEvidenceProducer(
+                sekai_pb2.RegisterEvidenceProducerRequest(capability=capability),
+                timeout=self.timeout,
+                metadata=self._metadata,
+            )
+
+    def register_evidence_schema(self, definition: sekai_pb2.EvidenceSchemaDefinition) -> None:
+        with grpc.insecure_channel(self.target) as channel:
+            sekai_pb2_grpc.SekaiServiceStub(channel).RegisterEvidenceSchema(
+                sekai_pb2.RegisterEvidenceSchemaRequest(definition=definition),
+                timeout=self.timeout,
+                metadata=self._metadata,
+            )
+
+    def submit_evidence(
+        self, envelope: sekai_pb2.EvidenceEnvelope
+    ) -> sekai_pb2.EvidenceSubmissionResult:
+        with grpc.insecure_channel(self.target) as channel:
+            response = sekai_pb2_grpc.SekaiServiceStub(channel).SubmitEvidence(
+                sekai_pb2.SubmitEvidenceRequest(envelope=envelope),
+                timeout=self.timeout,
+                metadata=(("x-principal", envelope.producer_identity),),
+            )
+        return response.result
+
+    def list_evidence_submissions(
+        self,
+        *,
+        producer_identity: str,
+        target_external_id: str,
+        evidence_type: str,
+        limit: int,
+    ) -> tuple[sekai_pb2.EvidenceSubmissionRecord, ...]:
+        with grpc.insecure_channel(self.target) as channel:
+            response = sekai_pb2_grpc.SekaiServiceStub(channel).ListEvidenceSubmissions(
+                sekai_pb2.ListEvidenceSubmissionsRequest(
+                    producer_identity=producer_identity,
+                    target_external_id=target_external_id,
+                    evidence_type=evidence_type,
+                    limit=limit,
+                ),
+                timeout=self.timeout,
+                metadata=(("x-principal", producer_identity),),
+            )
+        return tuple(response.submissions)

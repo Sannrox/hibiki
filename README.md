@@ -57,8 +57,9 @@ uv run hibiki config
 uv run hibiki health
 ```
 
-Register the five accepted Hibiki causal record types in Sekai. The command is
-idempotent and fails visibly if an existing definition has drifted:
+Register the five accepted Hibiki causal record types, the scoped BirdClaw
+evidence producer, and the two versioned evidence schemas in Sekai. The command
+is idempotent and fails visibly if an existing definition has drifted:
 
 ```sh
 uv run hibiki schema
@@ -113,3 +114,19 @@ reads authored history back through BirdClaw and stores the X post identifier.
 If the command outcome is uncertain, the next invocation reconciles authored
 history before any retry; it never posts blindly. The initial safe publication
 surface is limited to standard posts with X-weighted text at or below 280.
+
+After the publication has reached its 24-hour or seven-day observation window,
+collect raw post statistics and replies from BirdClaw and submit them through
+Sekai's evidence funnel:
+
+```sh
+uv run hibiki collect \
+  'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 24h
+uv run hibiki collect \
+  'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 7d
+```
+
+Collection is read-only with respect to X. Hibiki accepts only complete raw
+BirdClaw sync payloads, projects every envelope onto the publication record,
+and reuses prior snapshot and reply submissions on repeated collection. The
+generated BirdClaw digest is never invoked or admitted as source evidence.

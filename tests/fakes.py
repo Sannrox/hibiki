@@ -89,6 +89,12 @@ class FakeSekaiGateway:
     object_creates: list[str] = field(default_factory=list)
     object_updates: list[str] = field(default_factory=list)
     decisions: dict[str, sekai_pb2.Decision] = field(default_factory=dict)
+    evidence_producers: list[sekai_pb2.EvidenceProducerCapability] = field(
+        default_factory=list
+    )
+    evidence_schemas: list[sekai_pb2.EvidenceSchemaDefinition] = field(default_factory=list)
+    evidence_envelopes: list[sekai_pb2.EvidenceEnvelope] = field(default_factory=list)
+    evidence_results: list[sekai_pb2.EvidenceSubmissionResult] = field(default_factory=list)
 
     def list_schema_types(self) -> tuple[sekai_pb2.ObjectType, ...]:
         return tuple(self.schema_types.values())
@@ -141,3 +147,62 @@ class FakeSekaiGateway:
             if (not actor or decision.actor == actor) and (not action or decision.action == action)
         ]
         return tuple(sorted(matches, key=lambda decision: decision.timestamp, reverse=True)[:limit])
+
+    def register_evidence_producer(
+        self, capability: sekai_pb2.EvidenceProducerCapability
+    ) -> None:
+        stored = sekai_pb2.EvidenceProducerCapability()
+        stored.CopyFrom(capability)
+        self.evidence_producers.append(stored)
+
+    def register_evidence_schema(self, definition: sekai_pb2.EvidenceSchemaDefinition) -> None:
+        stored = sekai_pb2.EvidenceSchemaDefinition()
+        stored.CopyFrom(definition)
+        self.evidence_schemas.append(stored)
+
+    def submit_evidence(
+        self, envelope: sekai_pb2.EvidenceEnvelope
+    ) -> sekai_pb2.EvidenceSubmissionResult:
+        stored = sekai_pb2.EvidenceEnvelope()
+        stored.CopyFrom(envelope)
+        self.evidence_envelopes.append(stored)
+        result = sekai_pb2.EvidenceSubmissionResult(
+            submission=sekai_pb2.EvidenceSubmissionRecord(
+                id=f"evidence-{len(self.evidence_envelopes)}",
+                producer_identity=envelope.producer_identity,
+                source_type=envelope.source_type,
+                source_instance=envelope.source_instance,
+                source_record_id=envelope.source_record_id,
+                source_version=envelope.source_version,
+                source_sequence=envelope.source_sequence,
+                namespace=envelope.namespace,
+                target_external_id=envelope.target_external_id,
+                target_kind=envelope.target_kind,
+                evidence_type=envelope.evidence_type,
+                schema_id=envelope.schema_id,
+                schema_version=envelope.schema_version,
+                content_digest=envelope.content_digest,
+                lifecycle_state="available",
+            ),
+            admitted=True,
+            projected=True,
+        )
+        self.evidence_results.append(result)
+        return result
+
+    def list_evidence_submissions(
+        self,
+        *,
+        producer_identity: str,
+        target_external_id: str,
+        evidence_type: str,
+        limit: int,
+    ) -> tuple[sekai_pb2.EvidenceSubmissionRecord, ...]:
+        matches = [
+            result.submission
+            for result in self.evidence_results
+            if result.submission.producer_identity == producer_identity
+            and result.submission.target_external_id == target_external_id
+            and result.submission.evidence_type == evidence_type
+        ]
+        return tuple(matches[:limit])
