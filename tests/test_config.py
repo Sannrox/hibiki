@@ -31,6 +31,16 @@ def test_live_write_guard_requires_an_explicit_true_value(value: str) -> None:
     assert Settings.from_environ(environment).allow_live_writes is True
 
 
+@pytest.mark.parametrize("value", ["1", "true", "yes"])
+def test_ci_categorically_disables_live_writes(value: str) -> None:
+    environment = valid_environment() | {
+        "HIBIKI_ALLOW_LIVE_WRITES": "true",
+        "CI": value,
+    }
+
+    assert Settings.from_environ(environment).allow_live_writes is False
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [

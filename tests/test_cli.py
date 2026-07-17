@@ -293,3 +293,59 @@ def test_validate_and_approve_commands_bind_exact_edited_text_hash() -> None:
     assert approve_payload["status"] == "approved"
     assert approve_payload["final_text_hash"] == validate_payload["final_text_hash"]
     assert validate_diagnostics == approve_diagnostics == ""
+
+
+def test_publish_command_returns_read_back_post_identifier() -> None:
+    from tests.test_publication import (
+        BirdClawRunner,
+        _approved_proposal,
+        _authored_post,
+        _result,
+        _sync_result,
+    )
+
+    sekai = FakeSekaiGateway()
+    proposal = _approved_proposal(sekai)
+    runner = BirdClawRunner(
+        [
+            _result({"ok": True, "tweetId": "tweet_local"}),
+            _sync_result([_authored_post(proposal, "1900000000000000000")]),
+        ]
+    )
+
+    exit_code, payload, diagnostics = invoke(
+        ["publish", proposal.external_id],
+        environ=environment() | {"HIBIKI_ALLOW_LIVE_WRITES": "true"},
+        process_runner=runner,  # type: ignore[arg-type]
+        sekai_gateway=sekai,
+    )
+
+    assert exit_code == 0
+    assert payload["proposal_status"] == "published"
+    assert payload["publication_status"] == "posted"
+    assert payload["post_id"] == "1900000000000000000"
+    assert payload["target_account"] == "builder"
+    assert payload["reconciled"] is False
+    assert diagnostics == ""
+
+
+def test_publish_command_is_write_disabled_in_ci() -> None:
+    from tests.test_publication import BirdClawRunner, _approved_proposal
+
+    sekai = FakeSekaiGateway()
+    proposal = _approved_proposal(sekai)
+    runner = BirdClawRunner([])
+
+    exit_code, payload, diagnostics = invoke(
+        ["publish", proposal.external_id],
+        environ=environment()
+        | {"HIBIKI_ALLOW_LIVE_WRITES": "true", "CI": "true"},
+        process_runner=runner,  # type: ignore[arg-type]
+        sekai_gateway=sekai,
+    )
+
+    assert exit_code == 1
+    assert payload["error"]["code"] == "publication_failed"
+    assert "live publication is disabled" in payload["error"]["message"]
+    assert runner.calls == []
+    assert "publication failed" in diagnostics

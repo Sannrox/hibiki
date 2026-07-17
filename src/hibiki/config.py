@@ -29,6 +29,8 @@ class Settings:
         account = _required(environ, "HIBIKI_BIRDCLAW_ACCOUNT")
         target = _required(environ, "HIBIKI_CHISEI_TARGET")
         live_writes = _boolean(environ.get("HIBIKI_ALLOW_LIVE_WRITES", "false"))
+        if _ci_detected(environ):
+            live_writes = False
 
         errors: list[str] = []
         if not NAMESPACE_PATTERN.fullmatch(namespace):
@@ -70,6 +72,11 @@ def _boolean(raw: str) -> bool:
     raise ConfigurationError(
         "HIBIKI_ALLOW_LIVE_WRITES must be one of true/false, 1/0, yes/no, or on/off"
     )
+
+
+def _ci_detected(environ: Mapping[str, str]) -> bool:
+    value = environ.get("CI", "").strip().lower()
+    return value not in {"", "0", "false", "no", "off"}
 
 
 def _valid_grpc_target(target: str) -> bool:

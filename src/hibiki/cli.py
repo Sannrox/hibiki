@@ -25,6 +25,7 @@ from hibiki.proposals import (
     draft_source,
     validate_proposal_edit,
 )
+from hibiki.publication import PublicationWorkflowError, publish_proposal
 from hibiki.recommendation import recommend_source
 from hibiki.records import RecordConflictError, RecordValidationError, sha256_text
 from hibiki.schema import SchemaConflictError, register_schema_types
@@ -34,7 +35,8 @@ from hibiki.validation import ClaimValidationError
 
 USAGE = (
     "usage: hibiki <health|config|schema|recommend|draft SOURCE_ID|"
-    "validate PROPOSAL_ID|approve PROPOSAL_ID> [--timeout SECONDS]"
+    "validate PROPOSAL_ID|approve PROPOSAL_ID|publish PROPOSAL_ID> "
+    "[--timeout SECONDS]"
 )
 
 
@@ -68,13 +70,14 @@ def run(
         "draft",
         "validate",
         "approve",
+        "publish",
     }:
         return _usage_error(stdout, stderr, f"unknown command: {command}")
     if command in {"config", "schema", "recommend"} and len(argv) != 1:
         return _usage_error(stdout, stderr, f"{command} does not accept arguments")
     if command == "draft" and len(argv) != 2:
         return _usage_error(stdout, stderr, "draft requires SOURCE_ID")
-    if command in {"validate", "approve"} and len(argv) != 2:
+    if command in {"validate", "approve", "publish"} and len(argv) != 2:
         return _usage_error(stdout, stderr, f"{command} requires PROPOSAL_ID")
 
     try:
@@ -311,6 +314,42 @@ def run(
                 "status": result.proposal.status,
                 "approval_id": result.approval_id,
                 "validation_decision_id": result.validation_decision_id,
+            },
+        )
+        return 0
+
+    if command == "publish":
+        sekai = sekai_gateway or NativeSekaiGateway(settings.chisei_target)
+        try:
+            result = publish_proposal(
+                process_runner,
+                sekai,
+                argv[1],
+                settings.birdclaw_account,
+                settings.namespace,
+                allow_live_writes=settings.allow_live_writes,
+            )
+        except (
+            PublicationWorkflowError,
+            RecordConflictError,
+            RecordValidationError,
+            grpc.RpcError,
+        ) as error:
+            _emit_error(stdout, command, "publication_failed", str(error))
+            print(f"hibiki: publication failed: {error}", file=stderr)
+            return 1
+        _emit(
+            stdout,
+            {
+                "command": command,
+                "ok": True,
+                "proposal_external_id": result.proposal.external_id,
+                "proposal_status": result.proposal.status,
+                "publication_status": result.publication.status,
+                "post_id": result.publication.post_id,
+                "target_account": result.publication.target_account,
+                "attempted_at": result.publication.attempted_at,
+                "reconciled": result.reconciled,
             },
         )
         return 0

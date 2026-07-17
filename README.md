@@ -97,3 +97,19 @@ approval to its returned SHA-256 hash:
 printf '%s\n' '{"final_text_hash":"SHA256_FROM_VALIDATE"}' | \
   uv run hibiki approve 'hibiki.proposal:hibiki:OWNER/REPOSITORY@REVISION'
 ```
+
+Publish only after inspecting the approved text and explicitly enabling live
+writes for that invocation. BirdClaw must already be installed and authenticated
+for the configured account. CI always forces live writes off, even if the guard
+is set to true:
+
+```sh
+HIBIKI_ALLOW_LIVE_WRITES=true \
+  uv run hibiki publish 'hibiki.proposal:hibiki:OWNER/REPOSITORY@REVISION'
+```
+
+Hibiki records a durable intent before invoking `birdclaw compose post`, then
+reads authored history back through BirdClaw and stores the X post identifier.
+If the command outcome is uncertain, the next invocation reconciles authored
+history before any retry; it never posts blindly. The initial safe publication
+surface is limited to standard posts with X-weighted text at or below 280.
