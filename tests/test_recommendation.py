@@ -45,8 +45,8 @@ def test_recommendation_uses_last_successful_scan_and_records_lineage() -> None:
             timestamp=99,
             actor="hibiki",
             action="hibiki.source_selection",
-            evidence={"topic": "Prior selected topic"},
-            target_id="example/tenkai",
+            evidence={"topic": "Prior selected topic", "repository": "example/tenkai"},
+            target_id="hibiki.source:hibiki:example/tenkai@prior123",
             outcome="selected",
         )
     )

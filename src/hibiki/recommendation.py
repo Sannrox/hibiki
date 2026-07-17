@@ -59,7 +59,7 @@ def recommend_source(
     topic_decisions = [
         decision
         for decision in selection_decisions
-        if decision.target_id == repository
+        if decision.evidence.get("repository") == repository
         and decision.outcome == "selected"
         and decision.evidence.get("topic")
     ]
@@ -79,6 +79,7 @@ def recommend_source(
     target_id = repository
     evidence = {
         "bundle_hash": bundle.content_hash,
+        "repository": repository,
         "operation_id": selection.operation_id,
         "provider": selection.provider,
         "model": selection.model,
@@ -132,6 +133,7 @@ def recommend_source(
             reason="public default-branch scan and governed selection completed",
             evidence={
                 "bundle_hash": bundle.content_hash,
+                "repository": repository,
                 "scanned_at": bundle.scanned_at,
                 "commit_count": str(len(bundle.commits)),
                 "selection_decision_id": decision_id,
