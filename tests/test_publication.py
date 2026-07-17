@@ -322,6 +322,14 @@ def test_url_fallback_does_not_rescan_overlapping_protocols() -> None:
     assert _safe_x_text_weight(text) >= 280
 
 
+def test_explicit_url_after_underscore_is_still_weighted() -> None:
+    assert _safe_x_text_weight(f"{'a' * 257}_https://nic.music") == 281
+
+
+def test_fuzzy_domain_is_not_treated_as_explicit_url() -> None:
+    assert _safe_x_text_weight(f"{'a' * 264} foo.web") == 272
+
+
 def test_uncertain_post_reconciles_stored_account_before_any_retry() -> None:
     sekai = FakeSekaiGateway()
     proposal = _approved_proposal(sekai)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 import unicodedata
@@ -21,6 +22,7 @@ AUTHORED_LOOKBACK = timedelta(minutes=5)
 X_SNOWFLAKE_EPOCH_MS = 1_288_834_974_657
 MAX_SAFE_X_TEXT_WEIGHT = 280
 X_SHORT_URL_WEIGHT = 23
+PROTOCOL_PATTERN = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
 
 
 class PublicationWorkflowError(RuntimeError):
@@ -262,13 +264,17 @@ def _safe_x_text_weight(text: str) -> int:
         from twitter_text import parse_tweet
 
     weight = int(parse_tweet(text).weightedLength)
-    linkable_text = "".join(
+    linkable_characters = [
         character if _is_linkable_character(character) else " " for character in text
-    )
+    ]
+    for protocol in PROTOCOL_PATTERN.finditer(text):
+        if protocol.start() > 0:
+            linkable_characters[protocol.start() - 1] = " "
+    linkable_text = "".join(linkable_characters)
     for match in LinkifyIt().match(linkable_text) or []:
-        candidate = match.url
-        if not candidate.lower().startswith(("http://", "https://")):
+        if match.schema not in {"http:", "https:"}:
             continue
+        candidate = match.raw
         literal_weight = int(parse_tweet(candidate).weightedLength)
         weight += max(0, X_SHORT_URL_WEIGHT - literal_weight)
     return weight
