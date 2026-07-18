@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Sannrox/hibiki/security/advisories/new
+    about: Report approval bypasses, unintended writes, data exposure, and other vulnerabilities privately.
+  - name: Usage and contribution guide
+    url: https://github.com/Sannrox/hibiki/blob/main/CONTRIBUTING.md
+    about: Check setup, scope, tests, and contribution expectations before opening an issue.

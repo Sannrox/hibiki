@@ -1,261 +1,166 @@
 # Hibiki
 
-Hibiki (`響き`, "resonance") turns real project work into grounded posts on X
-and learns, from observed outcomes, which stories resonate with the intended
-audience.
+[![CI](https://github.com/Sannrox/hibiki/actions/workflows/ci.yml/badge.svg)](https://github.com/Sannrox/hibiki/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-It is a headless, approval-gated coordinator: every factual claim traces back
-to an inspectable source commit, every publication requires explicit
-hash-bound human approval, and every outcome is measured and fed back into
-governed learning. Hibiki is not an engagement bot. It will not auto-reply,
-follow or unfollow accounts, scrape competitors, manufacture claims, or
-publish without approval.
+Hibiki (`響き`, “resonance”) turns real project work into grounded posts on X,
+then learns from measured outcomes which stories create relevant technical
+conversation.
 
-## How it works
+It is a headless, approval-gated coordinator. Every factual claim traces to a
+public source commit, every publication requires approval of the exact text,
+and learning remains visible to the operator. Hibiki does not auto-reply,
+manage followers, scrape competitors, invent claims, or publish autonomously.
+
+> [!IMPORTANT]
+> Hibiki is experimental, pre-1.0 software built for one operator and the
+> Tenkai ecosystem. It is not currently a standalone social-media tool: a
+> usable deployment also needs Sekai, Chisei, BirdClaw, and an external
+> operator workflow. See [Project status](#project-status) before installing.
+
+## Why Hibiki?
+
+Most writing assistants optimize the text while ignoring whether its claims
+are true or whether the advice improved anything. Hibiki treats publication as
+an evidence-backed workflow:
 
 ```text
-source artifact -> candidate story -> approved draft -> published post
-       ^                                          |
-       |                                          v
+public commit -> selected story -> validated draft -> approved post
+      ^                                              |
+      |                                              v
  governed learning <- evaluated outcome <- observed metrics
 ```
 
-Hibiki coordinates a small ecosystem of systems, each with a single
-responsibility:
+Its primary success signal is a qualified technical reply from a potential
+user, tester, contributor, or peer—not impressions alone. The product contract
+and non-goals live in [`VISION.md`](VISION.md).
 
-| System   | Role |
-| -------- | ---- |
-| Tenkai   | The project whose public commits are the only source material |
-| `gh`     | Sole access path to public GitHub data |
-| Chisei   | Governs model work: selection, drafting, claim validation, reply classification, learning |
-| Sekai    | Durable causal record store (namespace `hibiki`) |
-| BirdClaw | Sole X transport: authentication, publication, post history |
-| Onmyoji  | External automation and operator-facing workflow; invokes this CLI |
+## Safety model
 
-Hibiki itself has no UI, daemon, scheduler, or local database. Every command
-writes one JSON object to stdout and reserves stderr for diagnostics, so an
-automation layer can invoke it safely. The full boundary is recorded in
-[`docs/decisions/`](docs/decisions/README.md).
+- **Public, bounded evidence:** only public default-branch Tenkai commits are
+  eligible; the full repository is never sent to a model.
+- **Claim validation:** edited text is checked against the source evidence
+  before it can be approved.
+- **Exact-text approval:** approval is bound to the final SHA-256 text hash;
+  editing the text invalidates it.
+- **Fail-closed publication:** live writes require a durable intent, valid
+  approval, and `HIBIKI_ALLOW_LIVE_WRITES=true`. CI overrides the guard to
+  `false`.
+- **No blind retries:** an uncertain BirdClaw response is reconciled against
+  authored-post history before another attempt.
+- **Governed learning:** recommendations need enough comparable outcomes and
+  never silently alter the drafting strategy.
 
-## Status
+These are product invariants, not optional deployment advice. The accepted
+[architecture decision records](docs/decisions/README.md) define them in full.
 
-All eight implementation phases in [`PLAN.md`](PLAN.md) are complete: the CLI
-covers discovery through governed learning. The Onmyoji integration that
-schedules and presents proposals is external and tracked separately.
+## Project status
 
-## Requirements
+The repository implements the CLI workflow from source recommendation through
+governed learning, with deterministic tests over fake process and gRPC
+boundaries. The external Onmyoji integration that schedules and presents
+operator work is not part of this repository and is still pending.
 
-- Python >= 3.12 and [`uv`](https://docs.astral.sh/uv/)
-- `gh`, authenticated for public GitHub reads
-- A running Sekai/Chisei environment reachable over gRPC
-- [BirdClaw](https://github.com/steipete/birdclaw), installed and
-  authenticated for the configured X account (only needed for live
-  publication and collection; `scripts/install_birdclaw.sh` installs the CLI)
+This means Hibiki is suitable for development, review, and integration work,
+but it is not a turnkey end-user application. There is no hosted service, UI,
+daemon, scheduler, local database, or published package installation path.
 
-## Configuration
+## Install from source
 
-Copy the non-secret identifiers from [`.env.example`](.env.example) into the
-invoking environment:
+Prerequisites:
 
-| Variable | Meaning |
-| -------- | ------- |
-| `HIBIKI_NAMESPACE` | Sekai namespace (default `hibiki`) |
-| `HIBIKI_TENKAI_REPOSITORY` | Source repository as `OWNER/REPOSITORY` |
-| `HIBIKI_BIRDCLAW_ACCOUNT` | BirdClaw account name for publication |
-| `HIBIKI_CHISEI_TARGET` | gRPC target, `HOST:PORT` or `unix:///abs/path` |
-| `HIBIKI_ALLOW_LIVE_WRITES` | Live X writes guard, defaults to `false` |
-
-Authentication belongs to `gh`, BirdClaw, and the Sekai/Chisei environment;
-Hibiki does not accept credential settings. CI always forces live writes off,
-even if the guard is set to true.
-
-Check configuration and reachable dependencies without performing writes:
+- Python 3.12 or newer and [`uv`](https://docs.astral.sh/uv/)
+- [`gh`](https://cli.github.com/), authenticated for public GitHub reads
+- a running Sekai and Chisei deployment reachable over gRPC
+- [BirdClaw](https://github.com/steipete/birdclaw), authenticated for the
+  configured X account when publishing or collecting observations
 
 ```sh
+git clone https://github.com/Sannrox/hibiki.git
+cd hibiki
+uv sync --locked
+cp .env.example .env
+```
+
+Edit `.env`, load those non-secret values into the invoking environment, then
+verify configuration and dependencies:
+
+```sh
+set -a
+. ./.env
+set +a
 uv run hibiki config
-uv run hibiki health          # accepts --timeout SECONDS
+uv run hibiki health
 ```
 
-## Workflow
+Hibiki does not read `.env` itself. Your shell, process manager, or automation
+layer must provide the variables. Do not put credentials in `.env`; `gh`,
+BirdClaw, and the Sekai/Chisei environment own authentication.
 
-The commands below follow one post through its full lifecycle. Identifiers
-are stable Sekai external ids of the form
-`hibiki.<type>:hibiki:OWNER/REPOSITORY@REVISION`.
+Continue with the [getting-started guide](docs/getting-started.md) to register
+schemas and run a safe first recommendation.
 
-### 1. Register schemas (once, idempotent)
+## CLI at a glance
 
-Register the five accepted Hibiki causal record types, the scoped BirdClaw
-evidence producer, and the two versioned evidence schemas in Sekai. The
-command fails visibly if an existing definition has drifted:
+Every command emits one machine-readable JSON object on stdout and reserves
+stderr for diagnostics.
 
-```sh
-uv run hibiki schema
-```
+| Stage | Commands | External effect |
+| --- | --- | --- |
+| Inspect | `config`, `health` | Read-only |
+| Initialize | `schema` | Registers Sekai types and evidence contracts |
+| Create | `recommend`, `draft`, `validate`, `approve` | Writes causal records; no X write |
+| Publish | `publish` | Can write to X only when all safety gates pass |
+| Observe | `collect`, `classify`, `confirm`, `outcome` | Reads X; writes evidence and decisions |
+| Learn | `hypothesize`, `strategy`, `hypothesis-status` | Writes governed hypotheses and decisions |
 
-### 2. Recommend a source
+See the [workflow guide](docs/workflow.md) for the end-to-end sequence and the
+[CLI reference](docs/cli-reference.md) for arguments, stdin contracts, and
+side effects.
 
-Discover new public default-branch commits since the last successful scan and
-ask Chisei to return one eligible source or an explicit no-candidate result.
-A local sensitive-data preflight runs before any model execution, and the
-selection decision and Chisei operation receipt are recorded in Sekai:
+## Architecture
 
-```sh
-uv run hibiki recommend
-```
+Hibiki coordinates systems without copying their responsibilities:
 
-### 3. Draft
+| System | Responsibility |
+| --- | --- |
+| Tenkai | Project whose public commits are the v0 source material |
+| `gh` | Sole access path to public GitHub data |
+| Chisei | Model execution, claim validation, classification, and learning |
+| Sekai | Durable causal records under the `hibiki` namespace |
+| BirdClaw | X authentication, publication, synchronization, and post history |
+| Onmyoji | Scheduling, presentation, operator interaction, and escalation |
 
-Generate one standalone draft from a selected source. Hibiki reloads the
-exact public revision, verifies its evidence hash, and returns the draft,
-reasoning, claims, and source references while persisting the proposal:
+Read the [architecture guide](docs/architecture.md) for data ownership,
+trust boundaries, and failure behavior.
 
-```sh
-uv run hibiki draft 'hibiki.source:hibiki:OWNER/REPOSITORY@REVISION'
-```
+## Contributing
 
-### 4. Validate edits
-
-Submit edited text as JSON on stdin for an independent factual-claim
-inventory and validation. A valid edit replaces the proposal text in
-`drafted` state; unsupported text is not persisted and invalidates any prior
-approval:
-
-```sh
-printf '%s\n' '{"final_text":"Exact edited post text"}' | \
-  uv run hibiki validate 'hibiki.proposal:hibiki:OWNER/REPOSITORY@REVISION'
-```
-
-### 5. Approve
-
-After presenting that exact validated text to the operator, bind explicit
-approval to its returned SHA-256 hash. Any later edit invalidates the
-approval:
+Run the same deterministic checks as CI:
 
 ```sh
-printf '%s\n' '{"final_text_hash":"SHA256_FROM_VALIDATE"}' | \
-  uv run hibiki approve 'hibiki.proposal:hibiki:OWNER/REPOSITORY@REVISION'
-```
-
-### 6. Publish
-
-Publish only after inspecting the approved text and explicitly enabling live
-writes for that invocation. BirdClaw must already be installed and
-authenticated for the configured account:
-
-```sh
-HIBIKI_ALLOW_LIVE_WRITES=true \
-  uv run hibiki publish 'hibiki.proposal:hibiki:OWNER/REPOSITORY@REVISION'
-```
-
-Hibiki records a durable intent before invoking `birdclaw compose post`, then
-reads authored history back through BirdClaw and stores the X post
-identifier. If the command outcome is uncertain, the next invocation
-reconciles authored history before any retry; it never posts blindly. The
-initial safe publication surface is limited to standard posts with X-weighted
-text at or below 280.
-
-### 7. Collect metrics
-
-After the publication reaches its 24-hour or seven-day observation window,
-collect raw post statistics and replies from BirdClaw and submit them through
-Sekai's evidence funnel:
-
-```sh
-uv run hibiki collect 'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 24h
-uv run hibiki collect 'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 7d
-```
-
-Collection is read-only with respect to X. Hibiki accepts only complete raw
-BirdClaw sync payloads, projects every envelope onto the publication record,
-and reuses prior snapshot and reply submissions on repeated collection. The
-24-hour observation must run within six hours of its boundary; the seven-day
-observation has a one-day tolerance, so late cumulative metrics cannot be
-mislabelled as fixed-window results. BirdClaw's generated digest is never
-invoked or admitted as source evidence.
-
-### 8. Classify replies
-
-Classify collected replies through Chisei's governed native execution. The
-first 25 classifications always require operator confirmation; corrections
-are retained as evaluation decisions. Automatic classification is enabled
-only after those confirmations reach 90% accuracy, and still requires at
-least 90% confidence:
-
-```sh
-uv run hibiki classify 'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION'
-uv run hibiki confirm REPLY_SUBMISSION_ID potential_user
-```
-
-The accepted categories are `potential_user`,
-`potential_tester_or_contributor`, `substantive_technical_discussion`,
-`general_reaction`, and `irrelevant_or_low_signal`.
-
-### 9. Report outcomes
-
-After required confirmations are complete, return the 24-hour preliminary or
-seven-day final outcome:
-
-```sh
-uv run hibiki outcome 'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 24h
-uv run hibiki outcome 'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION' 7d
-```
-
-Outcome JSON keeps raw engagement metrics separate from the primary
-`qualified_replies` count and includes the complete source, proposal,
-publication, evidence-submission, and outcome lineage.
-
-### 10. Governed learning
-
-Surface hypotheses once at least three comparable posts have completed
-seven-day outcomes, evaluate strategy recommendations behind the eight-post
-and two-period gates, and record explicit operator decisions. Learning never
-silently changes drafting behavior:
-
-```sh
-uv run hibiki hypothesize 'hibiki.publication:hibiki:OWNER/REPOSITORY@REVISION'
-uv run hibiki strategy
-uv run hibiki hypothesis-status HYPOTHESIS_ID accepted|rejected|retired
-```
-
-## Development
-
-Install the locked development environment and run the deterministic checks:
-
-```sh
-uv sync
+uv sync --locked
 uv run pytest
 uv run ruff check .
 uv run python scripts/generate_contracts.py --check
 ```
 
-All tests run against fakes; no test performs a live X write or requires a
-running Sekai/Chisei instance.
+Start with [`CONTRIBUTING.md`](CONTRIBUTING.md). Product ownership, safety, or
+learning changes require an ADR amendment before implementation. Report
+security-sensitive issues through [`SECURITY.md`](SECURITY.md), not a public
+issue containing exploit details.
 
-Hibiki vendors the public `sekai.proto` and `chisei.proto` contracts and
-commits their generated Python bindings. Refresh them from a sibling
-Sekai/Chisei checkout, then review the resulting source and generated diff:
+## Documentation
 
-```sh
-uv run python scripts/generate_contracts.py --update-from ../sekai-chisei/proto
-```
+The [documentation index](docs/README.md) routes users, operators,
+contributors, and reviewers to the relevant material. In particular:
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for conventions and
-[`AGENTS.md`](AGENTS.md) for the rules automated contributors must follow.
-
-## Project layout
-
-```text
-docs/decisions/   Accepted ADRs; the product and safety boundary
-docs/learnings/   Operational learnings worth keeping
-proto/            Vendored public Sekai/Chisei protobuf contracts
-scripts/          Contract generation and BirdClaw install helpers
-src/hibiki/       CLI and workflow modules
-tests/            Deterministic tests over fakes
-```
-
-Further reading: [`VISION.md`](VISION.md) for the problem and principles,
-[`PLAN.md`](PLAN.md) for the phased implementation record.
+- [`VISION.md`](VISION.md) — problem, promise, principles, and non-goals
+- [`docs/decisions/`](docs/decisions/README.md) — accepted product boundaries
+- [`PLAN.md`](PLAN.md) — implementation record and remaining external work
+- [`docs/learnings/`](docs/learnings/INDEX.md) — retained operational lessons
 
 ## License
 
-[MIT](LICENSE)
+Hibiki is available under the [MIT License](LICENSE).
