@@ -1,0 +1,59 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Hibiki
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not report approval bypasses, unintended publication, data exposure,
+        or other vulnerabilities here. Follow SECURITY.md instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Hibiki revision
+      description: Commit SHA, tag, or branch containing the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide the smallest safe sequence that reproduces the issue.
+      placeholder: |
+        1. Configure …
+        2. Run …
+        3. Observe …
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Sanitized output
+      description: >-
+        Include exit code, stdout JSON, and stderr if useful. Remove tokens,
+        private source material, account data, and analytics exports.
+      render: shell
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, uv version, and relevant dependency versions.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets, private material, and account data from this report.
+          required: true
+        - label: This report does not disclose a security vulnerability.
+          required: true
