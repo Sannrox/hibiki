@@ -7,6 +7,8 @@ from typing import Protocol
 import grpc
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
+from hibiki import channels
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessResult:
@@ -44,7 +46,7 @@ class GrpcHealthProbe(Protocol):
 class NativeGrpcHealthProbe:
     def check(self, target: str, service: str, timeout: float) -> ProbeResult:
         try:
-            with grpc.insecure_channel(target) as channel:
+            with channels.insecure_channel(target) as channel:
                 stub = health_pb2_grpc.HealthStub(channel)
                 request = health_pb2.HealthCheckRequest(service=service)
                 response = stub.Check(request, timeout=timeout)
