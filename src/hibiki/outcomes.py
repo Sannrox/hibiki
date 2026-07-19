@@ -356,18 +356,26 @@ def _execute(
     chisei: ChiseiGateway, namespace: str, task_type: str, spec: dict[str, object], max_tokens: int
 ) -> tuple[str, str]:
     digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:24]
+    spec_json = json.dumps(spec, separators=(",", ":"), sort_keys=True)
     plan = chisei.plan_execution(
         chisei_pb2.PlanExecutionRequest(
             input=chisei_pb2.ExecutionInput(
                 request_id=f"hibiki-{task_type}-{digest}",
                 namespace=namespace,
-                spec=json.dumps(spec, separators=(",", ":"), sort_keys=True),
+                spec=spec_json,
                 task_type=task_type,
                 task_class="public_evidence_evaluation",
                 max_tokens=max_tokens,
+                # Carry the spec in the user message: Chisei does not forward
+                # ``spec`` to the model when a message is present and enrichment
+                # is a passthrough (see select_candidate for the full rationale).
                 messages=(
                     chisei_pb2.ChatMessage(
-                        role="user", content="Evaluate only the referenced governed evidence."
+                        role="user",
+                        content=(
+                            "Evaluate only the referenced governed evidence. "
+                            "Use only the specification below.\n\n" + spec_json
+                        ),
                     ),
                 ),
                 system=(

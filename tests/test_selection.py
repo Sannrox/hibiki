@@ -66,6 +66,19 @@ def test_governed_selection_returns_one_bundled_candidate_and_receipt() -> None:
     assert gateway.receipt_requests[0].operation_id == "operation-1"
 
 
+def test_evidence_and_schema_reach_the_model_via_the_message() -> None:
+    # Chisei drops ``spec`` from the model prompt when the caller sends a
+    # message and enrichment is a passthrough, so the spec must ride in the
+    # message content itself, not only the ``spec`` field.
+    gateway = FakeChiseiGateway(candidate_response())
+
+    select_candidate(gateway, bundle(), (), namespace="sandbox")
+
+    message = gateway.plan_requests[0].input.messages[0].content
+    assert "response_schema" in message
+    assert "abc123" in message  # the evidence bundle revision travels in-message
+
+
 def test_explicit_no_candidate_is_a_valid_result() -> None:
     gateway = FakeChiseiGateway(
         json.dumps({"candidate": None, "reason": "No commit passes every eligibility rule."})
