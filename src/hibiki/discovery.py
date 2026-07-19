@@ -26,7 +26,7 @@ class DiscoveryLimits:
     max_files_per_commit: int = 100
     max_bundle_bytes: int = 96_000
     max_patch_bytes: int = 32_000
-    max_document_bytes: int = 16_000
+    max_document_bytes: int = 32_000
     timeout: float = 15.0
 
 
@@ -115,6 +115,21 @@ def discover_public_sources(
 
     omissions: list[dict[str, str]] = []
     commits: list[dict[str, Any]] = []
+
+    def _bundle_size(candidate_commits: list[dict[str, Any]]) -> int:
+        return len(
+            _canonical_json(
+                {
+                    "repository": repository,
+                    "default_branch": default_branch,
+                    "scanned_at": scanned_at_text,
+                    "since": since,
+                    "commits": candidate_commits,
+                    "omissions": omissions,
+                }
+            ).encode()
+        )
+
     for summary in summaries[: limits.max_commits]:
         if not isinstance(summary, dict):
             raise DiscoveryError("GitHub commit listing contains a non-object entry")
@@ -139,9 +154,19 @@ def discover_public_sources(
             ("gh", "api", f"repos/{repository}/commits/{revision}/check-runs"),
             limits.timeout,
         )
-        commits.append(
-            _build_commit(repository, revision, detail, checks, runner, limits, omissions)
-        )
+        # Newest-first: keep admitting commits until one would exceed the
+        # bounded-evidence budget, then omit it and continue trying smaller
+        # later commits. The byte cap is the safety invariant, so it governs
+        # how many commits are eligible rather than a fixed count.
+        omissions_mark = len(omissions)
+        commit = _build_commit(repository, revision, detail, checks, runner, limits, omissions)
+        if _bundle_size([*commits, commit]) > limits.max_bundle_bytes:
+            del omissions[omissions_mark:]
+            omissions.append(
+                {"revision": revision, "path": "*", "reason": "bundle_budget_exceeded"}
+            )
+            continue
+        commits.append(commit)
 
     payload = {
         "repository": repository,
@@ -288,10 +313,14 @@ def _build_commit(
         patches.append({"path": path, "patch": patch})
         if _is_document(path):
             document = _fetch_document(runner, repository, revision, path, limits)
-            if document is not None:
-                documents.append({"path": path, "content": document})
-            else:
+            if document is None:
                 omissions.append({"revision": revision, "path": path, "reason": "document_deleted"})
+            elif len(document.encode()) > limits.max_document_bytes:
+                omissions.append(
+                    {"revision": revision, "path": path, "reason": "document_too_large"}
+                )
+            else:
+                documents.append({"path": path, "content": document})
 
     return {
         "revision": revision,
@@ -337,11 +366,6 @@ def _fetch_document(
         decoded = base64.b64decode(normalized_content, validate=True)
     except ValueError as error:
         raise DiscoveryError(f"changed document {path!r} has invalid base64 content") from error
-    if len(decoded) > limits.max_document_bytes:
-        raise DiscoveryError(
-            f"changed document {path!r} is {len(decoded)} bytes; "
-            f"limit is {limits.max_document_bytes} bytes"
-        )
     try:
         return decoded.decode()
     except UnicodeDecodeError as error:
