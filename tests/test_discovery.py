@@ -181,6 +181,37 @@ def test_visible_bundle_ceiling_fails_instead_of_sending_oversized_context() -> 
         )
 
 
+def test_oversized_document_is_omitted_instead_of_aborting() -> None:
+    runner = fixture_runner()
+
+    bundle = discover_public_sources(
+        runner,
+        "example/tenkai",
+        since="2026-07-16T09:00:00Z",
+        limits=DiscoveryLimits(max_document_bytes=4),
+    )
+
+    # The commit stays eligible; only the oversized document drops out.
+    assert len(bundle.commits) == 1
+    assert bundle.commits[0]["documents"] == []
+    assert "document_too_large" in {entry["reason"] for entry in bundle.omissions}
+
+
+def test_commit_exceeding_bundle_budget_is_omitted_instead_of_aborting() -> None:
+    runner = fixture_runner(patch="+" + ("x" * 4000))
+
+    bundle = discover_public_sources(
+        runner,
+        "example/tenkai",
+        since="2026-07-16T09:00:00Z",
+        limits=DiscoveryLimits(max_bundle_bytes=1500),
+    )
+
+    # A commit that would overflow the budget is dropped, not fatal.
+    assert bundle.commits == ()
+    assert {entry["reason"] for entry in bundle.omissions} == {"bundle_budget_exceeded"}
+
+
 def test_file_limit_cannot_exceed_github_page_size() -> None:
     with pytest.raises(ValueError, match="100-file page limit"):
         discover_public_sources(
