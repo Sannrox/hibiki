@@ -10,6 +10,14 @@ from hibiki.contracts import sekai_pb2, sekai_pb2_grpc
 
 DEFAULT_PRINCIPAL = "local"
 
+# Sekai stamps a stored decision's actor from the authenticated principal and
+# discards the Decision.actor the client sent. Hibiki still asserts
+# actor="hibiki" when recording, because that is the honest claim of who acted,
+# but reading its own decisions back has to filter on the principal it actually
+# connects with. Filtering on "hibiki" silently returns nothing, which quietly
+# disables every read-back the workflow depends on.
+OWN_DECISION_ACTOR = DEFAULT_PRINCIPAL
+
 
 class SekaiGateway(Protocol):
     def list_schema_types(self) -> tuple[sekai_pb2.ObjectType, ...]: ...

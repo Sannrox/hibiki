@@ -11,7 +11,7 @@ from hibiki.chisei import ChiseiGateway
 from hibiki.contracts import sekai_pb2
 from hibiki.discovery import DiscoveryLimits, discover_public_sources
 from hibiki.records import CausalRepositories, SourceRecord
-from hibiki.sekai import SekaiGateway
+from hibiki.sekai import OWN_DECISION_ACTOR, SekaiGateway
 from hibiki.selection import Candidate, commit_evidence_hash, select_candidate
 
 DECISION_ID_NAMESPACE = uuid.UUID("78fb1003-480c-4448-9dbc-71cc65449ac9")
@@ -40,7 +40,9 @@ def recommend_source(
     clock_ms: Callable[[], int] | None = None,
 ) -> Recommendation:
     now_ms = (clock_ms or (lambda: time.time_ns() // 1_000_000))()
-    decisions = sekai.list_decisions(actor="hibiki", action="hibiki.source_scan", limit=100)
+    decisions = sekai.list_decisions(
+        actor=OWN_DECISION_ACTOR, action="hibiki.source_scan", limit=100
+    )
     successful_scans = [
         decision
         for decision in decisions
@@ -54,7 +56,7 @@ def recommend_source(
         else None
     )
     selection_decisions = sekai.list_decisions(
-        actor="hibiki", action="hibiki.source_selection", limit=100
+        actor=OWN_DECISION_ACTOR, action="hibiki.source_selection", limit=100
     )
     topic_decisions = [
         decision
