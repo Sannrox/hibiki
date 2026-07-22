@@ -66,17 +66,21 @@ def test_governed_selection_returns_one_bundled_candidate_and_receipt() -> None:
     assert gateway.receipt_requests[0].operation_id == "operation-1"
 
 
-def test_evidence_and_schema_reach_the_model_via_the_message() -> None:
-    # Chisei drops ``spec`` from the model prompt when the caller sends a
-    # message and enrichment is a passthrough, so the spec must ride in the
-    # message content itself, not only the ``spec`` field.
+def test_evidence_travels_in_the_spec_and_is_not_duplicated_in_the_message() -> None:
+    # Chisei prepends ``spec`` to the prompt as its own "[Task spec]" message.
+    # Embedding a second copy in the message would send the evidence bundle
+    # twice and overflow the model context, so the message stays a bare
+    # instruction and the bundle rides in ``spec`` alone.
     gateway = FakeChiseiGateway(candidate_response())
 
     select_candidate(gateway, bundle(), (), namespace="sandbox")
 
-    message = gateway.plan_requests[0].input.messages[0].content
-    assert "response_schema" in message
-    assert "abc123" in message  # the evidence bundle revision travels in-message
+    request = gateway.plan_requests[0].input
+    assert "response_schema" in request.spec
+    assert "abc123" in request.spec
+    message = request.messages[0].content
+    assert "response_schema" not in message
+    assert "abc123" not in message
 
 
 def test_explicit_no_candidate_is_a_valid_result() -> None:
