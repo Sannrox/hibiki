@@ -10,7 +10,7 @@ from hibiki.chisei import ChiseiGateway
 from hibiki.contracts import chisei_pb2, sekai_pb2
 from hibiki.evidence import PRODUCER_IDENTITY, REPLY_TYPE, SNAPSHOT_TYPE
 from hibiki.records import CausalRepositories, OutcomeRecord, PublicationRecord
-from hibiki.sekai import SekaiGateway
+from hibiki.sekai import OWN_DECISION_ACTOR, SekaiGateway
 
 
 class OutcomeWorkflowError(RuntimeError):
@@ -90,7 +90,9 @@ def classify_replies(
     publication = _publication(sekai, publication_external_id, namespace)
     replies = _submissions(sekai, publication.external_id, REPLY_TYPE)
     action = _scoped_action(CLASSIFICATION_ACTION, publication.external_id)
-    existing = _latest_by_target(sekai.list_decisions(actor="hibiki", action=action, limit=1000))
+    existing = _latest_by_target(
+        sekai.list_decisions(actor=OWN_DECISION_ACTOR, action=action, limit=1000)
+    )
     pending = tuple(reply for reply in replies if reply.id not in existing)
     confirmed_count, calibrated = _calibration(sekai, namespace)
     if pending:
@@ -139,14 +141,14 @@ def confirm_classification(
     classification_action = _scoped_action(CLASSIFICATION_ACTION, submission.target_external_id)
     confirmation_action = _scoped_action(CONFIRMATION_ACTION, submission.target_external_id)
     predictions = _latest_by_target(
-        sekai.list_decisions(actor="hibiki", action=classification_action, limit=1000)
+        sekai.list_decisions(actor=OWN_DECISION_ACTOR, action=classification_action, limit=1000)
     )
     prediction = predictions.get(submission_id)
     if prediction is None:
         raise OutcomeWorkflowError("reply must be classified before confirmation")
     predicted = prediction.evidence.get("category", "")
     existing = _latest_by_target(
-        sekai.list_decisions(actor="operator", action=confirmation_action, limit=1000)
+        sekai.list_decisions(actor=OWN_DECISION_ACTOR, action=confirmation_action, limit=1000)
     ).get(submission_id)
     if existing is not None and existing.evidence.get("confirmed_category") != category:
         raise OutcomeWorkflowError("classification confirmation is already recorded")
@@ -171,7 +173,9 @@ def confirm_classification(
     else:
         confirmation = existing
     evaluation_action = calibration_action(submission.namespace)
-    evaluations = sekai.list_decisions(actor="operator", action=evaluation_action, limit=500)
+    evaluations = sekai.list_decisions(
+        actor=OWN_DECISION_ACTOR, action=evaluation_action, limit=500
+    )
     evaluated_targets = {item.target_id for item in evaluations}
     recoverable = len(evaluations) < 500 or confirmation.timestamp > min(
         item.timestamp for item in evaluations
@@ -238,7 +242,7 @@ def build_outcome_report(
     )
     confirmed = _latest_by_target(
         sekai.list_decisions(
-            actor="operator",
+            actor=OWN_DECISION_ACTOR,
             action=_scoped_action(CONFIRMATION_ACTION, publication.external_id),
             limit=1000,
         )
@@ -429,7 +433,9 @@ def _latest_by_target(decisions: tuple[sekai_pb2.Decision, ...]) -> dict[str, se
 
 def _calibration(sekai: SekaiGateway, namespace: str) -> tuple[int, bool]:
     confirmations = _latest_by_target(
-        sekai.list_decisions(actor="operator", action=calibration_action(namespace), limit=500)
+        sekai.list_decisions(
+            actor=OWN_DECISION_ACTOR, action=calibration_action(namespace), limit=500
+        )
     )
     count = len(confirmations)
     correct = sum(item.outcome == "correct" for item in confirmations.values())

@@ -8,6 +8,7 @@ from hibiki.contracts import sekai_pb2
 from hibiki.evidence import PRODUCER_IDENTITY, REPLY_TYPE, SNAPSHOT_TYPE
 from hibiki.outcomes import (
     CATEGORIES,
+    CONFIRMATION_ACTION,
     OutcomeWorkflowError,
     build_outcome_report,
     calibration_action,
@@ -176,7 +177,11 @@ def test_confirmation_persists_correction_as_evaluation_evidence() -> None:
 
     assert result.corrected is True
     assert result.confirmed_count == 1
-    confirmation = next(item for item in sekai.decisions.values() if item.actor == "operator")
+    # Sekai stamps every stored actor from the caller's principal, so the action
+    # name — not the actor — is what distinguishes an operator confirmation.
+    confirmation = next(
+        item for item in sekai.decisions.values() if CONFIRMATION_ACTION in item.action
+    )
     assert confirmation.outcome == "corrected"
     assert confirmation.evidence["predicted_category"] == "potential_user"
     assert confirmation.evidence["confirmed_category"] == "substantive_technical_discussion"

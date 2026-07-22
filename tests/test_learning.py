@@ -135,7 +135,10 @@ class TestHypothesisSurfacing:
             sekai, chisei, outcomes[0].publication_external_id, "hibiki", clock_ms=lambda: 500
         )
 
-        decisions = [d for d in sekai.decisions.values() if d.actor == "hibiki"]
+        # Stored actors all carry the caller's principal, so select by action.
+        decisions = [
+            d for d in sekai.decisions.values() if d.action == "hibiki.hypothesis_surfacing"
+        ]
         assert len(decisions) == 1
         assert decisions[0].action == "hibiki.hypothesis_surfacing"
         assert decisions[0].evidence["comparable_posts"] == str(HYPOTHESIS_MINIMUM_POSTS)
@@ -497,8 +500,10 @@ class TestHypothesisStatusManagement:
             sekai, "hibiki.hypothesis:hibiki:h1", "accepted", "hibiki", clock_ms=lambda: 200
         )
 
-        decisions = [d for d in sekai.decisions.values() if d.actor == "operator"]
+        # Stored actors all carry the caller's principal, so select by action.
+        decisions = [
+            d for d in sekai.decisions.values() if d.action == "hibiki.hypothesis_accepted"
+        ]
         assert len(decisions) == 1
-        assert decisions[0].action == "hibiki.hypothesis_accepted"
         assert decisions[0].outcome == "accepted"
         assert decisions[0].evidence["previous_status"] == "surfaced"
