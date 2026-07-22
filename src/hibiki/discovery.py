@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -20,13 +21,40 @@ class SensitiveDataError(DiscoveryError):
     """Raised when the local evidence preflight finds sensitive material."""
 
 
+# Bounded evidence has to survive two independent limits: our own byte cap and
+# the served model's context window. The byte cap is the one we control, so it
+# is sized to fit inside the smaller of the two. Chisei does not report the
+# resolved model's context window on the execution plan, so the derivation is
+# stated here rather than negotiated at runtime; a deployment on a larger model
+# raises it by passing its own DiscoveryLimits.
+MODEL_CONTEXT_TOKENS = 16_384
+# The largest response reservation any Hibiki call site makes (drafting and
+# claim validation both ask for 1_500).
+RESPONSE_TOKEN_RESERVE = 1_500
+# System prompt, task framing, response schema, and Chisei's spec enrichment.
+PROMPT_OVERHEAD_TOKEN_RESERVE = 1_400
+# Minified JSON carrying diffs measured ~3.3 bytes per token against the
+# deployed tokenizer; 2.6 leaves margin for punctuation- or unicode-dense
+# evidence that tokenizes worse than the sample.
+EVIDENCE_BYTES_PER_TOKEN = 2.6
+
+MAX_BUNDLE_BYTES = int(
+    (MODEL_CONTEXT_TOKENS - RESPONSE_TOKEN_RESERVE - PROMPT_OVERHEAD_TOKEN_RESERVE)
+    * EVIDENCE_BYTES_PER_TOKEN
+)
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoveryLimits:
     max_commits: int = 20
     max_files_per_commit: int = 100
-    max_bundle_bytes: int = 96_000
-    max_patch_bytes: int = 32_000
-    max_document_bytes: int = 32_000
+    max_bundle_bytes: int = MAX_BUNDLE_BYTES
+    # Held well below the bundle cap so no single file can crowd out every other
+    # piece of evidence in a one-commit bundle. Documents get the larger share:
+    # they are the prose drafting actually quotes, where a patch mainly has to
+    # show that a change happened.
+    max_patch_bytes: int = 8_000
+    max_document_bytes: int = 12_000
     timeout: float = 15.0
 
 
@@ -236,14 +264,22 @@ def discover_public_revision(
         limits.timeout,
     )
     commit = _build_commit(repository, revision, detail, checks, runner, limits, omissions)
-    payload = {
-        "repository": repository,
-        "default_branch": default_branch,
-        "scanned_at": scanned_at_text,
-        "since": None,
-        "commits": [commit],
-        "omissions": omissions,
-    }
+
+    def _payload(current: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "repository": repository,
+            "default_branch": default_branch,
+            "scanned_at": scanned_at_text,
+            "since": None,
+            "commits": [current],
+            "omissions": omissions,
+        }
+
+    # A single revision is the whole bundle here, so there is no later commit to
+    # fall back to: shedding the largest attachments keeps the revision usable
+    # instead of failing drafting outright on a wide commit.
+    commit = _shed_to_budget(commit, revision, _payload, limits, omissions)
+    payload = _payload(commit)
     _sensitive_preflight(payload)
     encoded = _canonical_json(payload).encode()
     if len(encoded) > limits.max_bundle_bytes:
@@ -315,11 +351,17 @@ def _build_commit(
             document = _fetch_document(runner, repository, revision, path, limits)
             if document is None:
                 omissions.append({"revision": revision, "path": path, "reason": "document_deleted"})
-            elif len(document.encode()) > limits.max_document_bytes:
-                omissions.append(
-                    {"revision": revision, "path": path, "reason": "document_too_large"}
-                )
             else:
+                # Truncate rather than discard, matching patch handling above. A
+                # report one byte over the cap still carries its methodology and
+                # headline results, and dropping it whole leaves drafting with
+                # nothing concrete to ground a claim in.
+                document_bytes = document.encode()
+                if len(document_bytes) > limits.max_document_bytes:
+                    document = document_bytes[: limits.max_document_bytes].decode(errors="ignore")
+                    omissions.append(
+                        {"revision": revision, "path": path, "reason": "document_truncated"}
+                    )
                 documents.append({"path": path, "content": document})
 
     return {
@@ -331,6 +373,40 @@ def _build_commit(
         "checks": _normalize_checks(checks, revision),
         "documents": documents,
     }
+
+
+def _shed_to_budget(
+    commit: dict[str, Any],
+    revision: str,
+    payload: Callable[[dict[str, Any]], dict[str, Any]],
+    limits: DiscoveryLimits,
+    omissions: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Drop the largest patches, then documents, until the payload fits the cap.
+
+    Patches go first: a post quotes the prose a commit ships, while a patch
+    mainly has to show that a change happened. Shedding purely by size would
+    discard a long design document ahead of several small diffs and leave
+    drafting with nothing concrete to say. Within a kind, largest-first keeps the
+    most distinct pieces of evidence per byte, and ties break on path so the
+    surviving commit — and therefore its evidence hash — is reproducible across
+    scans.
+    """
+    commit = {**commit, "patches": list(commit["patches"]), "documents": list(commit["documents"])}
+    while len(_canonical_json(payload(commit)).encode()) > limits.max_bundle_bytes:
+        for kind in ("patches", "documents"):
+            candidates = [
+                (len(_canonical_json(entry).encode()), entry["path"], index)
+                for index, entry in enumerate(commit[kind])
+            ]
+            if candidates:
+                break
+        if not candidates:
+            return commit
+        _, path, index = max(candidates, key=lambda item: (item[0], item[1]))
+        del commit[kind][index]
+        omissions.append({"revision": revision, "path": path, "reason": "bundle_budget_exceeded"})
+    return commit
 
 
 def _fetch_document(
