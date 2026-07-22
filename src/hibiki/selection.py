@@ -57,18 +57,14 @@ def select_candidate(
                 task_type="source_selection",
                 task_class="public_content_recommendation",
                 max_tokens=1_000,
-                # The spec (evidence bundle + required response schema) is
-                # carried in the user message, not only in ``spec``: Chisei only
-                # forwards ``spec`` to the model when the caller sends no
-                # messages or enrichment rewrites it, so a stub message would
-                # otherwise reach the model with no evidence.
+                # The evidence bundle travels in ``spec`` alone. Chisei prepends
+                # it to the prompt as a "[Task spec]" message, so embedding a
+                # second copy here would send the bundle twice and overflow the
+                # model context.
                 messages=(
                     chisei_pb2.ChatMessage(
                         role="user",
-                        content=(
-                            "Select one eligible public commit, or return no candidate. "
-                            "Use only the specification below.\n\n" + spec
-                        ),
+                        content="Select one eligible public commit, or return no candidate.",
                     ),
                 ),
                 system=(
