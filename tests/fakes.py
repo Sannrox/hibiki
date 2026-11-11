@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from hibiki.boundaries import ProbeResult, ProcessResult
 from hibiki.contracts import chisei_pb2, sekai_pb2
+from hibiki.sekai import DEFAULT_PRINCIPAL
 
 
 @dataclass
@@ -93,6 +94,11 @@ class FakeSekaiGateway:
     evidence_schemas: list[sekai_pb2.EvidenceSchemaDefinition] = field(default_factory=list)
     evidence_envelopes: list[sekai_pb2.EvidenceEnvelope] = field(default_factory=list)
     evidence_results: list[sekai_pb2.EvidenceSubmissionResult] = field(default_factory=list)
+    # Sekai authenticates the caller and stamps the stored decision's actor from
+    # that principal, discarding whatever Decision.actor the client sent. The
+    # fake reproduces that so read-back filters are tested against the actor the
+    # server would really persist.
+    principal: str = DEFAULT_PRINCIPAL
 
     def list_schema_types(self) -> tuple[sekai_pb2.ObjectType, ...]:
         return tuple(self.schema_types.values())
@@ -133,6 +139,7 @@ class FakeSekaiGateway:
     def record_decision(self, decision: sekai_pb2.Decision) -> sekai_pb2.Decision:
         stored = sekai_pb2.Decision()
         stored.CopyFrom(decision)
+        stored.actor = self.principal
         self.decisions[stored.id] = stored
         return stored
 

@@ -66,6 +66,23 @@ def test_governed_selection_returns_one_bundled_candidate_and_receipt() -> None:
     assert gateway.receipt_requests[0].operation_id == "operation-1"
 
 
+def test_evidence_travels_in_the_spec_and_is_not_duplicated_in_the_message() -> None:
+    # Chisei prepends ``spec`` to the prompt as its own "[Task spec]" message.
+    # Embedding a second copy in the message would send the evidence bundle
+    # twice and overflow the model context, so the message stays a bare
+    # instruction and the bundle rides in ``spec`` alone.
+    gateway = FakeChiseiGateway(candidate_response())
+
+    select_candidate(gateway, bundle(), (), namespace="sandbox")
+
+    request = gateway.plan_requests[0].input
+    assert "response_schema" in request.spec
+    assert "abc123" in request.spec
+    message = request.messages[0].content
+    assert "response_schema" not in message
+    assert "abc123" not in message
+
+
 def test_explicit_no_candidate_is_a_valid_result() -> None:
     gateway = FakeChiseiGateway(
         json.dumps({"candidate": None, "reason": "No commit passes every eligibility rule."})

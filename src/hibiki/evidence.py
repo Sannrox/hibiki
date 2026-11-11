@@ -15,7 +15,7 @@ from hibiki.boundaries import ProcessRunner
 from hibiki.contracts import sekai_pb2
 from hibiki.publication import _authored_snowflake_window
 from hibiki.records import CausalRepositories, OutcomeRecord, PublicationRecord
-from hibiki.sekai import SekaiGateway
+from hibiki.sekai import OWN_DECISION_ACTOR, SekaiGateway
 
 PRODUCER_IDENTITY = "hibiki:birdclaw"
 SOURCE_TYPE = "birdclaw"
@@ -70,7 +70,7 @@ def register_evidence_contracts(
     registrations = tuple(
         decision
         for decision in gateway.list_decisions(
-            actor="hibiki", action=REGISTRATION_ACTION, limit=100
+            actor=OWN_DECISION_ACTOR, action=REGISTRATION_ACTION, limit=100
         )
         if decision.target_id == PRODUCER_IDENTITY and decision.outcome == "success"
     )

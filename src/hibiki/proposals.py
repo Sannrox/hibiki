@@ -21,7 +21,7 @@ from hibiki.contracts import sekai_pb2
 from hibiki.discovery import DiscoveryLimits, EvidenceBundle, discover_public_revision
 from hibiki.drafting import DraftClaim, DraftResult, SourceReference, generate_draft
 from hibiki.records import CausalRepositories, ProposalRecord, SourceRecord, sha256_text
-from hibiki.sekai import SekaiGateway
+from hibiki.sekai import OWN_DECISION_ACTOR, SekaiGateway
 from hibiki.selection import commit_evidence_hash, legacy_commit_evidence_hash
 from hibiki.validation import (
     ClaimInventoryResult,
@@ -396,7 +396,9 @@ def _migrate_legacy_source_hash(
     evidence_hash: str,
 ) -> SourceRecord:
     legacy_hash = legacy_commit_evidence_hash(bundle, source.revision)
-    selections = sekai.list_decisions(actor="hibiki", action="hibiki.source_selection", limit=100)
+    selections = sekai.list_decisions(
+        actor=OWN_DECISION_ACTOR, action="hibiki.source_selection", limit=100
+    )
     traceable = any(
         decision.target_id == source.external_id
         and decision.outcome == "selected"

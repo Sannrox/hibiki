@@ -57,6 +57,10 @@ def select_candidate(
                 task_type="source_selection",
                 task_class="public_content_recommendation",
                 max_tokens=1_000,
+                # The evidence bundle travels in ``spec`` alone. Chisei prepends
+                # it to the prompt as a "[Task spec]" message, so embedding a
+                # second copy here would send the bundle twice and overflow the
+                # model context.
                 messages=(
                     chisei_pb2.ChatMessage(
                         role="user",
